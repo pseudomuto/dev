@@ -1,0 +1,18 @@
+[package]
+name = "dev"
+resolver = "3"
+version = "0.0.1"
+edition = "2024"
+authors = ["David Muto <david.muto@gmail.com>"]
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+color-eyre = "0.6.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = "2.1.1"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+
+[lints.clippy]
+mod_module_files = "warn"

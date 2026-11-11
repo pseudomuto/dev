@@ -1,0 +1,5 @@
+# Every process dev starts must get the project's env, so build commands with
+# `Context::command`, never `Command::new` directly.
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "use `Context::command` so the project's env is applied" },
+]

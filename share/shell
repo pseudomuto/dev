@@ -1,0 +1,76 @@
+# shellcheck shell=sh
+#
+# Shell setup for tools that `dev` installs. Source it from your shell's rc
+# file (.zshrc, .bashrc, ...):
+#
+#   . /usr/local/share/dev/shell
+#
+# The setup itself is generated per user by `dev`, into
+# $XDG_DATA_HOME/dev/shell (~/.local/share/dev/shell by default). Each file
+# there is the tool's own setup, copied as is, so it can't drift from upstream.
+#
+# A program can't change the environment of the shell that ran it, so this
+# file keeps the shell in sync instead:
+#
+# - In bash and zsh, a prompt hook reloads the setup whenever `dev` changed
+#   it, even from another terminal. `dev` writes a new `.stamp` with every
+#   change, and the hook only compares that, so prompts stay fast.
+# - `dev` becomes a shell function that runs the real `dev` and then the same
+#   check, so `dev up && jq ...` works on one line.
+
+# Loads the generated setup that exists so far.
+__dev_load() {
+  __dev_shell="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell"
+
+  # zerobrew: the block `zb init` would have added to your rc file.
+  if [ -f "$__dev_shell/zerobrew" ]; then
+    # shellcheck source=/dev/null
+    . "$__dev_shell/zerobrew"
+  fi
+
+  unset __dev_shell
+}
+
+# Reloads the setup if `dev` changed it since this shell last loaded it. Keeps
+# `$?`, so prompts (and `dev`) still report the last command's status.
+#
+# Per-project env will hook in here later, by also checking for `$PWD`
+# changes.
+__dev_hook() {
+  set -- "$?"
+
+  __dev_stamp=
+  __dev_stamp_file="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell/.stamp"
+  if [ -f "$__dev_stamp_file" ]; then
+    read -r __dev_stamp <"$__dev_stamp_file" || :
+  fi
+
+  if [ "$__dev_stamp" != "$__dev_loaded_stamp" ]; then
+    __dev_loaded_stamp=$__dev_stamp
+    __dev_load
+  fi
+
+  unset __dev_stamp __dev_stamp_file
+  return "$1"
+}
+
+dev() {
+  command dev "$@"
+  __dev_hook
+}
+
+# Load now, whether or not there's a stamp yet.
+__dev_loaded_stamp="not loaded"
+__dev_hook
+
+# Run the hook before every prompt, first so later hooks see the new env.
+# Registering is skipped when it's already there, so re-sourcing is safe.
+if [ -n "${ZSH_VERSION:-}" ]; then
+  # zsh-only syntax, hidden from sh parsers in a string.
+  eval '(( ${precmd_functions[(Ie)__dev_hook]} )) || precmd_functions=(__dev_hook "${precmd_functions[@]}")'
+elif [ -n "${BASH_VERSION:-}" ]; then
+  case ";${PROMPT_COMMAND:-};" in
+    *";__dev_hook;"*) ;;
+    *) PROMPT_COMMAND="__dev_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+  esac
+fi

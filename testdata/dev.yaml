@@ -1,0 +1,37 @@
+name: demo-project
+env:
+  GREETING: "hello from ${HOME}"
+
+deps:
+  brew:
+    - jq
+    - yq
+
+  # go: 1.27
+  # go-alt:
+  #   version: 1.27
+  #   modules:
+  #     - github.com/pseudomuto/go/cmd/thing@v1.0.0
+  #
+  # rust: 1.99.0
+  # rust-alt1:
+  #   version: 1.99.0
+  #   profile: minimal
+  #   components: [clippy, rustfmt]
+  #   targets:
+  #     - aarch64-apple-darwin
+  #     - aarch64-unknown-linux-gnu
+  #
+  # rust-alt2:
+  #   toolchain: true
+  #
+  # custom:
+  #   - name: Ensure file exists
+  #     met: test -f test-file.txt
+  #     meet: |
+  #       echo "yo yo yo" > test-file.txt
+  #     down: rm -f test-file.txt
+
+commands:
+  # `dev hello a b` prints the greeting and its args.
+  hello: 'echo "$GREETING, args: $*"'
