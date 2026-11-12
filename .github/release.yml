@@ -1,0 +1,16 @@
+# Sections for the notes `gh release create --generate-notes` writes. They
+# list merged pull requests by label, which the PR title workflow sets from
+# each title's Conventional Commits type. A PR goes in the first section
+# that matches.
+changelog:
+  categories:
+    - title: Breaking changes
+      labels: [breaking]
+    - title: Features
+      labels: [enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Performance
+      labels: [performance]
+    - title: Other changes
+      labels: ["*"]

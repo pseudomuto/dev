@@ -44,11 +44,17 @@ Tests never touch the network or your machine's setup:
 To try a real `dev up`, use `dev test:docker`. It builds an image with dev installed, the shell setup loaded, and
 `testdata/dev.yaml` as the project.
 
-## Commits and releases
+## Pull requests and releases
 
-Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (`feat:`, `fix:`,
-`docs:`, ...), with a body that says why.
+Changes land through pull requests, squash-merged, so each one becomes a single commit on `main`:
+
+- **The PR title is the commit subject**, so it must be a [Conventional
+  Commit](https://www.conventionalcommits.org/en/v1.0.0/): `feat: ...`, `fix(shell): ...`, `docs: ...`. Mark a breaking
+  change with `!`, e.g. `feat!: ...`. A check fails until the title fits.
+- **The PR body is the commit message**, so say why the change is needed.
+- **The title is also the release notes line.** The same check labels the PR by its type, and releases group PRs by
+  label: Breaking changes, Features (`feat`), Fixes (`fix`), Performance (`perf`), then everything else.
 
 Releases are cut by running the Release workflow with a patch, minor, or major bump. It updates the version in
-`Cargo.toml`, tags it, and publishes binaries for `install.sh` and `dev self-update`. Don't change the version by
-hand.
+`Cargo.toml`, tags it, and publishes binaries for `install.sh` and `dev self-update`, with notes listing the PRs merged
+since the last release. Don't change the version by hand.
