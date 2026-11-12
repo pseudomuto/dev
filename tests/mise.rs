@@ -118,12 +118,16 @@ fn binary_installs_mise_when_missing() -> Result<()> {
         .with_install_path(&install_path)
         .with_install_url(installer(&dir)?)
         .with_shell_dir(dir.path().join("shell"));
-    let (mut ctx, out, err) = capturing_ctx();
+    let (mut ctx, out, log) = capturing_ctx();
 
     assert!(!task.is_applied(&mut ctx)?);
     task.apply(&mut ctx)?;
-    assert_eq!(format!("installed to {}\n", install_path.display()), out.to_string());
-    assert_eq!("progress\n", err.to_string());
+    assert!(
+        log.to_string()
+            .ends_with(&format!("\ninstalled to {}\nprogress\n", install_path.display())),
+        "log: {log}"
+    );
+    assert_eq!("", out.to_string());
     assert_eq!(
         setup_for(&install_path),
         fs::read_to_string(dir.path().join("shell/mise"))?
@@ -205,7 +209,7 @@ fn binary_fails_when_installer_cannot_be_fetched() -> Result<()> {
         .with_install_path(dir.path().join("managed/mise"))
         .with_install_url(&url)
         .with_shell_dir(dir.path().join("shell"));
-    let (mut ctx, _, err) = capturing_ctx();
+    let (mut ctx, _, log) = capturing_ctx();
 
     let msg = task
         .apply(&mut ctx)
@@ -213,8 +217,8 @@ fn binary_fails_when_installer_cannot_be_fetched() -> Result<()> {
         .to_string();
     assert_eq!(format!("mise installer ({url}) failed"), msg);
     assert!(
-        err.to_string().contains("curl: (37)"),
-        "expected curl's error on stderr: {err}"
+        log.to_string().contains("curl: (37)"),
+        "expected curl's error in the log: {log}"
     );
     assert!(!dir.path().join("shell/mise").exists(), "nothing should be written");
     Ok(())
@@ -377,7 +381,7 @@ fn tool_installs_with_ctx_env_when_mise_has_work_to_do() -> Result<()> {
     let dir = tempdir()?;
     let mise = install_mise(&dir, 1)?;
     let tool = Tool::new("python", "3.14").with_mise(&mise.path);
-    let (ctx, out, _) = capturing_ctx();
+    let (ctx, _, log) = capturing_ctx();
     let mut ctx = Context {
         env: vec![("DEV_MARK".into(), "from dev.yaml".into())],
         ..ctx
@@ -385,7 +389,13 @@ fn tool_installs_with_ctx_env_when_mise_has_work_to_do() -> Result<()> {
 
     assert!(!tool.is_applied(&mut ctx)?);
     tool.apply(&mut ctx)?;
-    assert_eq!("installed python@3.14 (mark: from dev.yaml)\n", out.to_string());
+    assert_eq!(
+        format!(
+            "$ {} install python@3.14\ninstalled python@3.14 (mark: from dev.yaml)\n",
+            mise.path.display()
+        ),
+        log.to_string()
+    );
     assert_eq!(
         vec!["/: install --dry-run-code python@3.14", "/: install python@3.14"],
         mise.calls()?

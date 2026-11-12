@@ -4,6 +4,7 @@ pub mod deps;
 mod down;
 pub mod process;
 pub mod project;
+pub mod run_log;
 pub mod shell;
 mod up;
 

@@ -1,8 +1,16 @@
-use std::{collections::BTreeMap, env};
+use std::{collections::BTreeMap, env, path::Path};
 
 use clap::{CommandFactory, Parser, Subcommand};
-use color_eyre::eyre::{Result, WrapErr, bail};
-use dev::{Context, project::Project, shell};
+use color_eyre::{
+    Section,
+    eyre::{Result, WrapErr, bail},
+};
+use dev::{
+    Context,
+    project::Project,
+    run_log::{self, RunLog},
+    shell,
+};
 
 /// The project file `dev` reads, relative to the current directory.
 const PROJECT_FILE: &str = "dev.yaml";
@@ -61,8 +69,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::HookEnv => unreachable!("handled before loading dev.yaml"),
-        Command::Up => dev::up(&mut ctx, &project)?,
-        Command::Down => dev::down(&mut ctx, &project)?,
+        Command::Up => with_run_log(&mut ctx, "up", |ctx| dev::up(ctx, &project))?,
+        Command::Down => with_run_log(&mut ctx, "down", |ctx| dev::down(ctx, &project))?,
         Command::Project(args) => {
             let (name, args) = args.split_first().expect("clap passes the command name first");
             let code = dev::run_command(&ctx, &project, name, args)?;
@@ -71,6 +79,14 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Runs `f` with the output of the commands it runs going to a new log in
+/// `./.dev/log` (next to dev.yaml). A failure says where that log is.
+fn with_run_log(ctx: &mut Context, command: &str, f: impl FnOnce(&mut Context) -> Result<()>) -> Result<()> {
+    let log = RunLog::create(Path::new("."), command, run_log::KEEP)?;
+    ctx.log = Box::new(log.file);
+    f(ctx).with_note(|| format!("full output is in {}", log.path.display()))
 }
 
 /// The process env, skipping vars that aren't UTF-8. `PWD` falls back to the

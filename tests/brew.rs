@@ -117,11 +117,14 @@ fn zerobrew_apply_runs_installer_with_no_modify_path() -> Result<()> {
         .with_zb(zb_with_init(&dir, "0.4.1")?)
         .with_latest_version(|_| Ok("0.4.2".into()))
         .with_shell_dir(dir.path().join("shell"));
-    let (mut ctx, out, err) = capturing_ctx();
+    let (mut ctx, out, log) = capturing_ctx();
 
     task.apply(&mut ctx)?;
-    assert_eq!("args: --no-modify-path\n", out.to_string());
-    assert_eq!("progress\n", err.to_string());
+    assert!(
+        log.to_string().ends_with("\nargs: --no-modify-path\nprogress\n"),
+        "log: {log}"
+    );
+    assert_eq!("", out.to_string());
     Ok(())
 }
 
@@ -134,12 +137,12 @@ fn zerobrew_apply_skips_installer_when_zb_is_current() -> Result<()> {
         .with_zb(zb_with_init(&dir, "0.4.2")?)
         .with_latest_version(|_| Ok("0.4.2".into()))
         .with_shell_dir(dir.path().join("shell"));
-    let (mut ctx, out, err) = capturing_ctx();
+    let (mut ctx, out, log) = capturing_ctx();
 
     task.apply(&mut ctx)?;
     assert!(shell_file.exists(), "the shell file should still be written");
     assert_eq!("", out.to_string());
-    assert_eq!("", err.to_string());
+    assert_eq!("", log.to_string(), "nothing should run");
     Ok(())
 }
 
@@ -206,7 +209,7 @@ fn zerobrew_apply_fails_when_installer_cannot_be_fetched() -> Result<()> {
         .with_install_url(&url)
         .with_zb(dir.path().join("zb"))
         .with_latest_version(|_| panic!("latest version shouldn't be checked when zb is missing"));
-    let (mut ctx, _, err) = capturing_ctx();
+    let (mut ctx, _, log) = capturing_ctx();
 
     let msg = task
         .apply(&mut ctx)
@@ -214,8 +217,8 @@ fn zerobrew_apply_fails_when_installer_cannot_be_fetched() -> Result<()> {
         .to_string();
     assert_eq!(format!("zerobrew installer ({url}) failed"), msg);
     assert!(
-        err.to_string().contains("curl: (37)"),
-        "expected curl's error on stderr: {err}"
+        log.to_string().contains("curl: (37)"),
+        "expected curl's error in the log: {log}"
     );
     Ok(())
 }
@@ -293,11 +296,14 @@ fn package_apply_installs_when_missing() -> Result<()> {
     let dir = tempdir()?;
     let zb = FakeZb::new(&dir, "No formulas installed.\n", "")?;
     let pkg = Package::new("jq").with_zb(&zb.path);
-    let (mut ctx, out, _) = capturing_ctx();
+    let (mut ctx, _, log) = capturing_ctx();
 
     pkg.apply(&mut ctx)?;
     assert_eq!(vec!["list", "install jq"], zb.calls()?);
-    assert_eq!("install jq done\n", out.to_string());
+    assert_eq!(
+        format!("$ {} install jq\ninstall jq done\n", zb.path.display()),
+        log.to_string()
+    );
     Ok(())
 }
 
@@ -306,11 +312,14 @@ fn package_apply_upgrades_when_installed() -> Result<()> {
     let dir = tempdir()?;
     let zb = FakeZb::new(&dir, "jq 1.7.0\n", "jq\n")?;
     let pkg = Package::new("jq").with_zb(&zb.path);
-    let (mut ctx, out, _) = capturing_ctx();
+    let (mut ctx, _, log) = capturing_ctx();
 
     pkg.apply(&mut ctx)?;
     assert_eq!(vec!["list", "upgrade jq"], zb.calls()?);
-    assert_eq!("upgrade jq done\n", out.to_string());
+    assert_eq!(
+        format!("$ {} upgrade jq\nupgrade jq done\n", zb.path.display()),
+        log.to_string()
+    );
     Ok(())
 }
 

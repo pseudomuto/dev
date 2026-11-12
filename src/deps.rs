@@ -48,8 +48,14 @@ const TASK_INDENT: &str = "  ";
 
 /// Writes a status line to `ctx.out`, e.g. `  Installing jq ... applying`.
 /// Every status line goes through here, so they all look the same.
+///
+/// Applying also starts a section in `ctx.log` (`== Installing jq`), so the
+/// output of the commands that follow is easy to find.
 pub(crate) fn report(ctx: &mut Context, indent: &str, name: &str, status: Status) -> Result<()> {
     writeln!(ctx.out, "{indent}{name} ... {status}")?;
+    if let Status::Applying = status {
+        writeln!(ctx.log, "== {name}")?;
+    }
     Ok(())
 }
 

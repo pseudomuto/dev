@@ -44,6 +44,12 @@ pub struct Context {
     /// Where errors and diagnostics go. Defaults to stderr.
     pub err: Box<dyn Write + Send>,
 
+    /// Where the output of commands dev runs goes (see
+    /// [`process::run`](crate::process::run)), so `out` only has dev's own
+    /// status lines. `dev up` and `dev down` point it at a file in
+    /// `.dev/log`. Defaults to stderr.
+    pub log: Box<dyn Write + Send>,
+
     /// Set on every process `dev` starts, e.g. a project's `env`. Defaults to
     /// none.
     pub env: Vec<(String, String)>,
@@ -62,11 +68,13 @@ impl Context {
 }
 
 impl Default for Context {
-    /// Creates a context that writes to the process's stdout and stderr.
+    /// Creates a context that writes to the process's stdout and stderr, with
+    /// command output on stderr.
     fn default() -> Self {
         Self {
             out: Box::new(io::stdout()),
             err: Box::new(io::stderr()),
+            log: Box::new(io::stderr()),
             env: Vec::new(),
         }
     }

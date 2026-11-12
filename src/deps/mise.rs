@@ -226,8 +226,8 @@ impl Task for Binary {
     /// Installs mise when it's missing, or updates the one dev installed when
     /// it isn't current, then writes the shell setup for it.
     ///
-    /// Output from the installer and `mise self-update` is copied to `ctx.out`
-    /// and `ctx.err` as they run.
+    /// Output from the installer and `mise self-update` goes to `ctx.log` as
+    /// they run.
     fn apply(&self, ctx: &mut crate::Context) -> crate::Result<()> {
         let mise = match self.locate()? {
             Found::Missing(path) => {
@@ -460,8 +460,8 @@ impl Task for Tool {
         &self.label
     }
 
-    /// Runs `mise install <name>@<version>`, copying its output to `ctx.out`
-    /// and `ctx.err` as it runs.
+    /// Runs `mise install <name>@<version>`, with its output going to
+    /// `ctx.log` as it runs.
     fn apply(&self, ctx: &mut crate::Context) -> crate::Result<()> {
         let mise = self.mise()?;
         let mut cmd = mise_command(ctx, &mise);

@@ -33,17 +33,19 @@ impl Display for Buffer {
     }
 }
 
-/// A context whose `out` and `err` both write to buffers the test can read.
+/// A context whose `out` and `log` write to buffers the test can read, in
+/// that order. `err` goes to a buffer nobody reads.
 // Each tests/*.rs file compiles this module separately, and not all of them use it.
 #[allow(dead_code)]
 pub fn capturing_ctx() -> (Context, Buffer, Buffer) {
-    let (out, err) = (Buffer::default(), Buffer::default());
+    let (out, log) = (Buffer::default(), Buffer::default());
     let ctx = Context {
         out: Box::new(out.clone()),
-        err: Box::new(err.clone()),
+        err: Box::new(Buffer::default()),
+        log: Box::new(log.clone()),
         ..Context::default()
     };
-    (ctx, out, err)
+    (ctx, out, log)
 }
 
 /// Shared record of calls made to fake tasks, e.g. `["check a", "apply a"]`.

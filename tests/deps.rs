@@ -38,11 +38,12 @@ fn tasks_met_stops_at_first_unapplied_task() -> Result<()> {
 fn meet_tasks_applies_only_unapplied_tasks() -> Result<()> {
     let log = Log::default();
     let tasks = tasks(vec![FakeTask::new("a", true, &log), FakeTask::new("b", false, &log)]);
-    let (mut ctx, out, _) = capturing_ctx();
+    let (mut ctx, out, run_log) = capturing_ctx();
 
     meet_tasks(&tasks, &mut ctx)?;
     assert_eq!(vec!["check a", "check b", "apply b"], *log.borrow());
     assert_eq!("  a ... met\n  b ... applying\n", out.to_string());
+    assert_eq!("== b\n", run_log.to_string(), "applying starts a log section");
     Ok(())
 }
 

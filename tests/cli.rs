@@ -169,6 +169,8 @@ fn down_succeeds_with_no_deps() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty(), "no deps, nothing to report");
+    assert!(dir.path().join(".dev/log/latest").is_file(), "down still gets a log");
+    assert_eq!("*\n", std::fs::read_to_string(dir.path().join(".dev/.gitignore"))?);
     Ok(())
 }
 

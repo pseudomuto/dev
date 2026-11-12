@@ -194,8 +194,8 @@ impl Task for ZeroBrew {
     /// Installs or upgrades `zb` when it isn't current, then writes its shell
     /// setup.
     ///
-    /// The installer's output is copied to `ctx.out` and `ctx.err` as it runs.
-    /// stdin stays attached to the terminal so sudo can prompt for a password.
+    /// The installer's output goes to `ctx.log` as it runs. stdin stays
+    /// attached to the terminal so sudo can prompt for a password.
     fn apply(&self, ctx: &mut crate::Context) -> crate::Result<()> {
         // When only the shell file is missing, zb itself is fine.
         if !self.is_current(ctx)? {
@@ -240,7 +240,9 @@ impl ZeroBrew {
             &self.install_url,
         ]);
 
-        process::run(ctx, &mut cmd).wrap_err_with(|| format!("zerobrew installer ({}) failed", self.install_url))
+        // It may run sudo, which needs stdin for the password.
+        process::run_interactive(ctx, &mut cmd)
+            .wrap_err_with(|| format!("zerobrew installer ({}) failed", self.install_url))
     }
 }
 
