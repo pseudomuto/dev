@@ -256,17 +256,29 @@ takes effect at the next prompt.
 
 ## Development
 
-Tasks run with [mise](https://mise.jdx.dev):
+dev is set up with dev. [Install it](#install), then from the repo:
 
-| Task                   | What it does                                     |
-| ---------------------- | ------------------------------------------------ |
-| `mise run build`       | Builds a debug binary.                           |
-| `mise run test`        | Runs the tests.                                  |
-| `mise run lint`        | Runs clippy, with warnings as errors.            |
-| `mise run fmt`         | Formats the code (needs nightly rustfmt).        |
-| `mise run test:ci`     | Runs everything CI does: format, lints, tests.   |
-| `mise run test:docker` | Opens a shell in a throwaway Linux container.    |
-| `mise run demo`        | Records `demo/demo.gif` in a container.          |
+```sh
+dev up
+```
+
+That installs rustup if needed, the Rust toolchain in `rust-toolchain.toml`, nightly rustfmt (`rustfmt.toml` needs
+it), and actionlint, cargo-shear, and shellcheck. Their versions are pinned in `dev.yaml`. dev keeps tools in your own
+mise config, so these become your default versions everywhere, not only in this repo.
+
+`dev --help` lists the project's commands. The main ones:
+
+| Command           | What it does                                     |
+| ----------------- | ------------------------------------------------ |
+| `dev build`       | Builds a debug binary.                           |
+| `dev test`        | Runs the tests. Args go to `cargo test`.         |
+| `dev lint`        | Runs clippy, with warnings as errors.            |
+| `dev fmt`         | Formats the code.                                |
+| `dev test:ci`     | Runs everything CI does: format, lints, tests.   |
+| `dev test:docker` | Opens a shell in a throwaway Linux container.    |
+| `dev demo`        | Records `demo/demo.gif` in a container.          |
+
+`test:docker` and `demo` need Docker.
 
 `test:docker` builds an image with dev installed, the shell setup loaded, and `testdata/dev.yaml` as the project, so
 you can try `dev up` for real without touching your machine.

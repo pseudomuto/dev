@@ -1,0 +1,76 @@
+name: dev
+
+deps:
+  # First, so cargo exists before mise builds cargo:cargo-shear with it.
+  rust:
+    - rust-toolchain.toml
+    # rustfmt.toml uses options only nightly rustfmt has.
+    - nightly: [rustfmt]
+  actionlint: 1.7.12
+  "cargo:cargo-shear": 1.14.0
+  shellcheck: 0.11.0
+
+commands:
+  build:
+    desc: Build the project in debug mode
+    run: cargo build "$@"
+
+  build:release:
+    desc: Build the project in release mode
+    run: cargo build --release "$@"
+
+  test:
+    desc: Run the tests
+    run: cargo test --all-features "$@"
+
+  test:verbose:
+    desc: Run the tests without capturing output
+    run: cargo test --all-features "$@" -- --no-capture
+
+  test:ci:
+    desc: Run the full CI pipeline
+    run: |
+      set -e
+      dev fmt:check
+      dev lint
+      dev lint:deps
+      dev lint:actions
+      dev lint:shell
+      dev test
+      dev build
+
+  test:docker:
+    desc: Build a throwaway container with dev and a sample dev.yaml, and open a shell in it
+    run: docker build -t dev-test . && docker run --rm -it dev-test
+
+  demo:
+    desc: Record demo/demo.gif with VHS in a throwaway container (needs Docker and network)
+    run: docker build -f demo/Dockerfile -t dev-demo . && docker run --rm -v "$PWD/demo:/vhs" dev-demo
+
+  fmt:
+    desc: Run cargo fmt
+    run: cargo +nightly fmt --all
+
+  fmt:check:
+    desc: Check if cargo fmt would change anything
+    run: cargo +nightly fmt --all -- --check
+
+  lint:
+    desc: Run clippy
+    run: cargo clippy --all-targets --all-features -- -D warnings
+
+  lint:deps:
+    desc: Check for unused dependencies
+    run: cargo shear
+
+  lint:actions:
+    desc: Lint the GitHub Actions workflows
+    run: actionlint
+
+  lint:shell:
+    desc: Lint the shell scripts
+    run: shellcheck share/shell install.sh
+
+  lint:fix:
+    desc: Run clippy and auto-fix where possible
+    run: cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged

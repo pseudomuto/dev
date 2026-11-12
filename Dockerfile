@@ -1,5 +1,5 @@
 # A throwaway Linux box for trying `dev up` for real, without touching the
-# host. Run it with `mise run test:docker`.
+# host. Run it with `dev test:docker`.
 
 FROM rust:1.99.0-slim-trixie AS build
 WORKDIR /src

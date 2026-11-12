@@ -1,6 +1,6 @@
 # Records demo/demo.gif with VHS (https://github.com/charmbracelet/vhs), in a
 # throwaway container so `dev up` installs nothing on the host. Run it with
-# `mise run demo`.
+# `dev demo`.
 
 FROM rust:1.99.0-slim-trixie AS build
 WORKDIR /src
@@ -35,5 +35,5 @@ COPY --chown=demo:demo demo/dev.yaml /home/demo/demo/dev.yaml
 COPY --chown=demo:demo demo/demo.tape /home/demo/demo.tape
 
 WORKDIR /home/demo
-# The GIF is written to /vhs, which `mise run demo` mounts from demo/.
+# The GIF is written to /vhs, which `dev demo` mounts from demo/.
 ENTRYPOINT ["vhs", "--output", "/vhs/demo.gif", "/home/demo/demo.tape"]
