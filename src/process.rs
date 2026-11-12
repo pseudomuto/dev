@@ -47,3 +47,18 @@ pub fn run(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
     }
     Ok(())
 }
+
+/// Runs `cmd` and returns its stdout, failing with its stderr on a non-zero
+/// exit. `display` is how the command is named in errors.
+pub fn output(cmd: &mut Command, display: &str) -> Result<String> {
+    let output = cmd.output().wrap_err_with(|| format!("failed to run `{display}`"))?;
+
+    if !output.status.success() {
+        bail!(
+            "`{display}` failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}

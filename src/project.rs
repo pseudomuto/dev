@@ -9,7 +9,7 @@ use serde::{
 
 use crate::{
     Result,
-    deps::{Dependency, brew::Brew},
+    deps::{Dependency, brew::Brew, mise::Mise},
 };
 
 /// Resolves `${VAR}` in env values. Same contract as [`std::env::var`].
@@ -27,6 +27,8 @@ pub type Lookup<'a> = dyn Fn(&str) -> std::result::Result<String, env::VarError>
 ///   brew:
 ///     - jq
 ///     - yq
+///   node: lts
+///   python: 3.14
 /// ```
 pub struct Project {
     /// Lowercase words separated by dashes, e.g. `demo-project`.
@@ -37,7 +39,9 @@ pub struct Project {
     pub env: Vec<(String, String)>,
     /// Shell snippets run by `dev <name>`, by name.
     pub commands: BTreeMap<String, String>,
-    /// In the order they appear under `deps`.
+    /// In the order they appear under `deps`. Keys other than built-in
+    /// dependencies (e.g. `brew`) are tools, all installed by one mise
+    /// dependency where the first one appears.
     pub deps: Vec<Box<dyn Dependency>>,
 }
 
@@ -58,7 +62,7 @@ impl Project {
     /// Parses a `dev.yaml` document, expanding env values from the process
     /// environment.
     ///
-    /// Fails on unknown top-level fields, unsupported dependency keys, names
+    /// Fails on unknown top-level fields, reserved dependency keys, names
     /// that aren't lowercase and dashed, and env values that reference unset
     /// variables.
     pub fn from_yaml(yaml: &str) -> Result<Self> {
@@ -117,11 +121,15 @@ impl<'de> Visitor<'de> for DepsVisitor {
     type Value = Deps;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("a map of dependency type to its settings, e.g. `brew: [jq]`")
+        f.write_str("a map of dependency type to its settings, e.g. `brew: [jq]` or `node: lts`")
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Deps, A::Error> {
         let mut deps: Vec<Box<dyn Dependency>> = Vec::new();
+        // Every key that isn't a built-in dependency is a mise tool. They're
+        // all met by one dependency, placed where the first tool appears.
+        let mut tools: Vec<(String, String)> = Vec::new();
+        let mut tools_at = None;
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -129,12 +137,22 @@ impl<'de> Visitor<'de> for DepsVisitor {
                     let packages: Vec<String> = map.next_value()?;
                     deps.push(Box::new(Brew::new(packages)));
                 }
+                // Reserved for a built-in dependency, so it can't be a tool.
                 // Fail while reading the value so the error points at this
                 // entry. Failing here directly points at the start of `deps`.
-                other => {
-                    map.next_value_seed(Unsupported(other))?;
+                "custom" => {
+                    map.next_value_seed(Unsupported(&key))?;
+                }
+                _ => {
+                    let version: String = map.next_value()?;
+                    tools_at.get_or_insert(deps.len());
+                    tools.push((key, version));
                 }
             }
+        }
+
+        if let Some(at) = tools_at {
+            deps.insert(at, Box::new(Mise::new(tools)));
         }
 
         Ok(Deps(deps))

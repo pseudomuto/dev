@@ -22,6 +22,14 @@ pub fn home() -> crate::Result<PathBuf> {
         .ok_or_else(|| eyre!("HOME is not set"))
 }
 
+/// `$XDG_CONFIG_HOME`, or `~/.config` when it's unset or empty.
+pub fn config_home() -> crate::Result<PathBuf> {
+    match std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => Ok(home()?.join(".config")),
+    }
+}
+
 /// `$XDG_DATA_HOME`, or `~/.local/share` when it's unset or empty.
 pub fn data_home() -> crate::Result<PathBuf> {
     match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {

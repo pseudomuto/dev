@@ -7,6 +7,9 @@ deps:
     - jq
     - yq
 
+  # Anything that isn't a built-in dependency is a tool, installed with mise.
+  shellcheck: latest
+
   # go: 1.27
   # go-alt:
   #   version: 1.27

@@ -21,6 +21,36 @@ deps:
     Ok(())
 }
 
+#[test]
+fn from_yaml_parses_other_deps_as_one_tools_dep_where_the_first_appears() -> Result<()> {
+    let project = Project::from_yaml(
+        r#"
+name: demo
+deps:
+  node: lts
+  brew: [jq]
+  python: 3.10
+  "go:golang.org/x/tools/gopls": latest
+"#,
+    )?;
+
+    let names: Vec<&str> = project.deps.iter().map(|d| d.name()).collect();
+    assert_eq!(vec!["Install tools", "Install brew dependencies"], names);
+
+    let tasks: Vec<&str> = project.deps[0].tasks().iter().map(|t| t.name()).collect();
+    assert_eq!(
+        vec![
+            "Install mise",
+            "Configure tools",
+            "Installing node@lts",
+            "Installing python@3.10",
+            "Installing go:golang.org/x/tools/gopls@latest",
+        ],
+        tasks
+    );
+    Ok(())
+}
+
 fn project_named(name: &str) -> Result<Project> {
     Project::from_yaml(&format!("name: {name:?}\n"))
 }
@@ -57,17 +87,26 @@ fn from_yaml_rejects_names_that_are_not_lowercase_dashed() {
 }
 
 #[test]
-fn from_yaml_rejects_unsupported_dependencies() {
-    let yaml = "name: demo\ndeps:\n  brew: [jq]\n  go: 1.27\n";
+fn from_yaml_rejects_reserved_dependencies() {
+    let yaml = "name: demo\ndeps:\n  brew: [jq]\n  custom: []\n";
     let msg = match Project::from_yaml(yaml) {
-        Ok(_) => panic!("expected `go` to be rejected"),
+        Ok(_) => panic!("expected `custom` to be rejected"),
         Err(e) => e.to_string(),
     };
-    // The location should point at the `go` entry, not the start of `deps`.
+    // The location should point at the `custom` entry, not the start of `deps`.
     assert!(
-        msg.starts_with("error: line 4 column 7: unsupported dependency `go`"),
+        msg.starts_with("error: line 4 column 11: unsupported dependency `custom`"),
         "unexpected error: {msg}"
     );
+}
+
+#[test]
+fn from_yaml_rejects_tools_without_a_version_string() {
+    let msg = match Project::from_yaml("name: demo\ndeps:\n  node: [22, 24]\n") {
+        Ok(_) => panic!("expected a list of versions to be rejected"),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.starts_with("error: line 3 column 9: "), "unexpected error: {msg}");
 }
 
 #[test]

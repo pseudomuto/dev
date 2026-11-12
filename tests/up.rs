@@ -25,7 +25,10 @@ fn up_applies_unapplied_tasks_with_indented_status() -> Result<()> {
 
     dev::up(&mut ctx, &project)?;
     assert_eq!("a ... applying\n  t1 ... met\n  t2 ... applying\n", out.to_string());
-    assert_eq!(vec!["check dep a", "check t1", "check t2", "apply t2"], *log.borrow());
+    assert_eq!(
+        vec!["check dep a", "meet a", "check t1", "check t2", "apply t2"],
+        *log.borrow()
+    );
     Ok(())
 }
 
@@ -57,7 +60,7 @@ fn up_stops_at_first_failure() {
     let err = dev::up(&mut ctx, &project).expect_err("a failing task should fail up");
     let chain: Vec<String> = err.chain().map(ToString::to_string).collect();
 
-    assert_eq!(vec!["task failed: t1 (in a)", "boom"], chain);
+    assert_eq!(vec!["dependency failed: a", "task failed: t1", "boom"], chain);
     assert_eq!("a ... applying\n  t1 ... applying\n", out.to_string());
-    assert_eq!(vec!["check dep a", "check t1", "apply t1"], *log.borrow());
+    assert_eq!(vec!["check dep a", "meet a", "check t1", "apply t1"], *log.borrow());
 }

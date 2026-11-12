@@ -5,7 +5,6 @@ use std::{
     env,
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use color_eyre::eyre::{WrapErr, bail, eyre};
@@ -66,36 +65,12 @@ impl Dependency for Brew {
         )]
     }
 
-    /// Applies each task that isn't already applied, in order.
     fn meet(&self, ctx: &mut crate::Context) -> crate::Result<()> {
-        for task in &self.tasks {
-            let applied = task
-                .is_applied(ctx)
-                .wrap_err_with(|| format!("failed to check task: {}", task.name()))?;
-
-            if !applied {
-                task.apply(ctx)
-                    .wrap_err_with(|| format!("task failed: {}", task.name()))?;
-            }
-        }
-
-        Ok(())
+        super::meet_tasks(&self.tasks, ctx)
     }
 
-    /// Returns true when every task is applied. Stops at the first one that
-    /// isn't, so later (possibly slow) checks are skipped.
     fn is_met(&self, ctx: &mut crate::Context) -> crate::Result<bool> {
-        for task in &self.tasks {
-            let applied = task
-                .is_applied(ctx)
-                .wrap_err_with(|| format!("failed to check task: {}", task.name()))?;
-
-            if !applied {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
+        super::tasks_met(&self.tasks, ctx)
     }
 
     fn down(&self, _ctx: &mut crate::Context) -> crate::Result<()> {
@@ -191,7 +166,7 @@ impl ZeroBrew {
             cmd.env("ZEROBREW_DIR", home()?.join(".zerobrew"));
         }
         // Its output names the throwaway .profile, so only show it on failure.
-        checked_output(&mut cmd, &format!("{} init", zb.display()))?;
+        process::output(&mut cmd, &format!("{} init", zb.display()))?;
 
         let profile = fake_home.path().join(".profile");
         let config =
@@ -344,22 +319,7 @@ impl Task for Package {
 /// Runs `zb <args>` and returns its stdout, failing on a non-zero exit.
 fn zb_output(ctx: &crate::Context, zb: &Path, args: &[&str]) -> crate::Result<String> {
     let display = format!("{} {}", zb.display(), args.join(" "));
-    checked_output(ctx.command(zb).args(args), &display)
-}
-
-/// Runs `cmd` and returns its stdout, failing with its stderr on a non-zero
-/// exit. `display` is how the command is named in errors.
-fn checked_output(cmd: &mut Command, display: &str) -> crate::Result<String> {
-    let output = cmd.output().wrap_err_with(|| format!("failed to run `{display}`"))?;
-
-    if !output.status.success() {
-        bail!(
-            "`{display}` failed with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    process::output(ctx.command(zb).args(args), &display)
 }
 
 /// Marks the shell setup `zb init` manages in an rc file.

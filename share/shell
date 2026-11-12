@@ -30,6 +30,13 @@ __dev_load() {
     . "$__dev_shell/zerobrew"
   fi
 
+  # mise: runs `mise activate` for this shell. It goes after zerobrew, so the
+  # tools mise manages come first on PATH.
+  if [ -f "$__dev_shell/mise" ]; then
+    # shellcheck source=/dev/null
+    . "$__dev_shell/mise"
+  fi
+
   unset __dev_shell
 }
 

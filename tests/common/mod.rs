@@ -10,7 +10,7 @@ use color_eyre::eyre::bail;
 use dev::{
     Context,
     Result,
-    deps::{Dependency, Task},
+    deps::{Dependency, Task, meet_tasks},
     project::Project,
 };
 
@@ -142,9 +142,10 @@ impl Dependency for FakeDep {
         &self.tasks
     }
 
-    fn meet(&self, _ctx: &mut Context) -> Result<()> {
+    /// Logs the call, then meets its tasks the way real dependencies do.
+    fn meet(&self, ctx: &mut Context) -> Result<()> {
         self.log.borrow_mut().push(format!("meet {}", self.name));
-        Ok(())
+        meet_tasks(&self.tasks, ctx)
     }
 
     fn is_met(&self, _ctx: &mut Context) -> Result<bool> {
