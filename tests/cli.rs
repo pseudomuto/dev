@@ -235,6 +235,21 @@ fn help_lists_project_commands() -> Result<()> {
 }
 
 #[test]
+fn bare_dev_lists_project_commands_too() -> Result<()> {
+    let dir = project_dir(COMMANDS_YAML)?;
+    let output = dev(&dir, &[])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // clap's usual help-on-no-command: stderr and a usage error's status.
+    assert_eq!(Some(2), output.status.code(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("Project commands:\n  deploy  Deploy an app\n"),
+        "stderr: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 fn help_works_without_a_valid_dev_yaml() -> Result<()> {
     let none = tempfile::tempdir()?;
     let output = dev(&none, &["--help"])?;

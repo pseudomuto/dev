@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use color_eyre::{
     Section,
     eyre::{Result, WrapErr, bail},
@@ -46,10 +46,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
-    // Read first so `dev --help` can list its commands. Failing is fine
-    // until a command needs it.
-    let loaded = Project::load(PROJECT_FILE);
-    let cli = parse_cli(&loaded);
+    let cli = parse_cli();
     let vars = process_env()?;
 
     // Runs anywhere, with or without ./dev.yaml.
@@ -60,7 +57,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let project = loaded?;
+    let project = Project::load(PROJECT_FILE)?;
     reject_built_in_names(&project)?;
 
     // A shell that already loaded this dev.yaml has its env, so expanding it
@@ -90,15 +87,31 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Parses the command line, exiting on errors and `--help`. The help lists
-/// the commands in `loaded` (./dev.yaml), if there is one.
-fn parse_cli(loaded: &Result<Project>) -> Cli {
+/// Parses the command line, exiting on errors and `--help`.
+///
+/// Help lists the commands in ./dev.yaml, so only help reads it here.
+/// Everything else, `hook-env` before every prompt especially, would just
+/// pay for a parse it doesn't use.
+fn parse_cli() -> Cli {
+    let err = match Cli::try_parse() {
+        Ok(cli) => return cli,
+        Err(err) => err,
+    };
+    // A bare `dev` shows help too, as a usage error.
+    if !matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        err.exit();
+    }
+
+    let loaded = Project::load(PROJECT_FILE);
     let mut cmd = Cli::command();
-    if let Some(help) = project_commands_help(&cmd, loaded) {
+    if let Some(help) = project_commands_help(&cmd, &loaded) {
         cmd = cmd.after_help(help);
     }
-    let matches = cmd.get_matches();
-    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+    // Same args, so this is the same help request, now with the section.
+    cmd.try_get_matches().err().unwrap_or(err).exit()
 }
 
 /// A "Project commands:" section for `dev --help`, styled like clap's own
