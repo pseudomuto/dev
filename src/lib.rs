@@ -8,6 +8,7 @@ pub mod report;
 pub mod run_log;
 pub mod shell;
 mod up;
+pub mod update;
 
 pub type Result<T> = color_eyre::eyre::Result<T>;
 

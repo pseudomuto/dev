@@ -41,3 +41,11 @@ pub fn data_home() -> crate::Result<PathBuf> {
         None => Ok(home()?.join(".local/share")),
     }
 }
+
+/// `$XDG_STATE_HOME`, or `~/.local/state` when it's unset or empty.
+pub fn state_home() -> crate::Result<PathBuf> {
+    match std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()) {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => Ok(home()?.join(".local/state")),
+    }
+}

@@ -45,7 +45,7 @@ To pick the version or where it goes, set these for `sh`:
 curl -fsSL https://raw.githubusercontent.com/pseudomuto/dev/main/install.sh | DEV_VERSION=0.1.0 DEV_INSTALL_DIR=/usr/local/bin sh
 ```
 
-Run the same command again to update. To build from source instead (the Rust version is pinned in
+dev keeps itself up to date (see [Updates](#updates)). To build from source instead (the Rust version is pinned in
 `rust-toolchain.toml`):
 
 ```sh
@@ -179,7 +179,7 @@ How the long form works:
 
 A long-form command without `flags` or `args` passes its args through as is, like the short form.
 
-Command names can't match a built-in command (`up`, `down`, `shell-init`, `hook-env`, `help`). Commands always exit with their own status.
+Command names can't match a built-in command (`up`, `down`, `self-update`, `shell-init`, `hook-env`, `help`). Commands always exit with their own status.
 
 ## Commands
 
@@ -187,6 +187,7 @@ Command names can't match a built-in command (`up`, `down`, `shell-init`, `hook-
 | ------------------ | ------------------------------------------------------------------------- |
 | `dev up`           | Installs or updates every dependency in `./dev.yaml` that isn't current.  |
 | `dev down`         | Takes down every dependency, last one first.                              |
+| `dev self-update`  | Installs the latest release, if it's newer.                              |
 | `dev shell-init`   | Prints the shell setup, for `eval "$(dev shell-init)"` in your rc file.   |
 | `dev <name> [...]` | Runs a command from the `commands` section.                               |
 
@@ -208,6 +209,23 @@ less .dev/log/latest
 
 When a step fails, dev shows its last lines of output and where the full log is. `.dev` has its own `.gitignore`, so
 there's nothing to add to yours.
+
+## Updates
+
+With the shell setup loaded, dev checks for a new release at most every 4 hours, from the prompt. The check and the
+install run in the background, so the prompt never waits on them. The next `dev` command then says what changed:
+
+```text
+dev updated 0.1.0 -> 0.2.0
+```
+
+`dev self-update` does the same on demand. Installs are checked against the release's checksums, the same as the
+installer.
+
+- Set `DEV_AUTO_UPDATE=0` to turn it off, e.g. in your rc file.
+- Builds from source (debug builds, and `cargo install` into `~/.cargo/bin`) don't update themselves.
+- The last background run's output is in `~/.local/state/dev/update.log` (or `$XDG_STATE_HOME/dev`), for when one
+  fails.
 
 ## How env is loaded
 

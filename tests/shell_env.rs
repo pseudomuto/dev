@@ -262,6 +262,7 @@ fn share_shell_loads_and_unloads_project_env() -> Result<()> {
         .env("HOME", sh.home.path())
         .env("PWD", sh.home.path())
         .env("XDG_DATA_HOME", sh.path("data"))
+        .env("DEV_AUTO_UPDATE", "0")
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
         .current_dir(sh.home.path())
         .args(["-c", script, "sh"])

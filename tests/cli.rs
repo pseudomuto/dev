@@ -17,6 +17,8 @@ use tempfile::TempDir;
 const HOME_OVERRIDES: &[&str] = &[
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "DEV_DOWNLOAD_URL",
     "MISE_CONFIG_DIR",
     "MISE_DATA_DIR",
     "MISE_INSTALL_PATH",
@@ -49,6 +51,8 @@ fn dev_with(dir: &TempDir, args: &[&str], vars: &[(&str, &str)]) -> Result<Outpu
     for var in HOME_OVERRIDES {
         cmd.env_remove(var);
     }
+    // Never a real update, even from a release build. Tests opt in.
+    cmd.env("DEV_AUTO_UPDATE", "0");
     cmd.envs(vars.iter().copied());
     Ok(cmd.output()?)
 }
@@ -272,6 +276,27 @@ fn help_works_without_a_valid_dev_yaml() -> Result<()> {
 }
 
 #[test]
+fn the_next_command_prints_an_update_notice_once() -> Result<()> {
+    let dir = project_dir(COMMANDS_YAML)?;
+    let state = dir.path().join("home/.local/state/dev");
+    std::fs::create_dir_all(&state)?;
+    std::fs::write(state.join("updated"), "dev updated 0.1.0 -> 0.2.0\n")?;
+
+    let first = dev(&dir, &["hello"])?;
+    assert_eq!(Some(0), first.status.code());
+    assert_eq!("dev updated 0.1.0 -> 0.2.0\n", String::from_utf8_lossy(&first.stderr));
+    assert_eq!("hi from hello, args: \n", String::from_utf8_lossy(&first.stdout));
+
+    let second = dev(&dir, &["hello"])?;
+    assert!(
+        second.stderr.is_empty(),
+        "shown once: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    Ok(())
+}
+
+#[test]
 fn project_commands_exit_with_their_own_code() -> Result<()> {
     let dir = project_dir(COMMANDS_YAML)?;
     let output = dev(&dir, &["fail"])?;
@@ -381,7 +406,9 @@ fn hook_env(home: &TempDir, rel: &str) -> Result<Output> {
         .env("HOME", home.path())
         .env("PWD", &pwd)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_STATE_HOME")
         .env_remove("__DEV_ENV")
+        .env("DEV_AUTO_UPDATE", "0")
         .output()?)
 }
 

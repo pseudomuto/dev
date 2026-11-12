@@ -16,6 +16,7 @@ use dev::{
     report::{Plain, Reporter, clack::Clack},
     run_log::{self, RunLog},
     shell,
+    update::{self, Outcome, Updater},
 };
 
 /// The project file `dev` reads, relative to the current directory.
@@ -37,6 +38,13 @@ enum Command {
     /// Print the shell setup. Add `eval "$(dev shell-init)"` to your
     /// .zshrc or .bashrc
     ShellInit,
+    /// Install the latest dev release, if it's newer than this one
+    SelfUpdate {
+        /// Run by the prompt hook: save a notice for the next dev command
+        /// instead of only printing it.
+        #[arg(long, hide = true)]
+        background: bool,
+    },
     /// Print the sh code that loads dev.yaml env into the shell. Run by
     /// `share/shell` before every prompt.
     #[command(hide = true)]
@@ -62,10 +70,30 @@ async fn main() -> Result<()> {
             if let Some(script) = shell::env::hook(&vars)? {
                 print!("{script}");
             }
+            // After the script, and never instead of it: a failure here
+            // mustn't leave the shell without its env.
+            if let Err(e) = auto_update(&vars) {
+                eprintln!("dev: failed to check for updates: {e:#}");
+            }
+            return Ok(());
+        }
+        Command::SelfUpdate { background } => {
+            let updater = Updater::for_current_exe()?;
+            let outcome = updater.update(&Context::default())?;
+            let notice = update::describe(&outcome);
+            if background && matches!(outcome, Outcome::Updated { .. }) {
+                updater.save_notice(&notice)?;
+            } else if !background {
+                // Anything saved is older news than this.
+                updater.take_notice()?;
+            }
+            println!("{notice}");
             return Ok(());
         }
         _ => {}
     }
+
+    print_update_notice();
 
     let project = Project::load(PROJECT_FILE)?;
     reject_built_in_names(&project)?;
@@ -84,7 +112,9 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
-        Command::ShellInit | Command::HookEnv => unreachable!("handled before loading dev.yaml"),
+        Command::ShellInit | Command::HookEnv | Command::SelfUpdate { .. } => {
+            unreachable!("handled before loading dev.yaml")
+        }
         Command::Up => with_run_log(&mut ctx, "up", &project.name, |ctx| dev::up(ctx, &project))?,
         Command::Down => with_run_log(&mut ctx, "down", &project.name, |ctx| dev::down(ctx, &project))?,
         Command::Project(args) => {
@@ -95,6 +125,27 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Starts a background `dev self-update` if `DEV_AUTO_UPDATE` (in `vars`)
+/// allows it and the last check was long enough ago.
+fn auto_update(vars: &BTreeMap<String, String>) -> Result<()> {
+    let updater = Updater::for_current_exe()?;
+    if updater.auto_update_enabled(vars.get("DEV_AUTO_UPDATE").map(String::as_str)) {
+        updater.spawn_if_due(&Context::default())?;
+    }
+    Ok(())
+}
+
+/// Prints what the last background update did, once. A failure to read it
+/// is only a warning: it shouldn't stop the command that was asked for.
+fn print_update_notice() {
+    let notice = Updater::for_current_exe().and_then(|u| u.take_notice());
+    match notice {
+        Ok(Some(notice)) => eprintln!("{notice}"),
+        Ok(None) => {}
+        Err(e) => eprintln!("warning: failed to read the update notice: {e:#}"),
+    }
 }
 
 /// Parses the command line, exiting on errors and `--help`.

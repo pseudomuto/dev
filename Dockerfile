@@ -7,8 +7,9 @@ WORKDIR /src
 # rustup download macOS/musl targets this build doesn't need.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-# Built into the binary for `dev shell-init`.
+# Built into the binary for `dev shell-init` and `dev self-update`.
 COPY share ./share
+COPY install.sh ./
 RUN cargo build --release --locked
 
 FROM debian:trixie-slim
@@ -20,6 +21,9 @@ RUN apt-get update \
 
 # Without a UTF-8 locale, dev's UI falls back to ASCII (`|` for `│`).
 ENV LANG=C.UTF-8
+# It's a release build, so the prompt would otherwise replace it with the
+# latest published release: not the build this image is for.
+ENV DEV_AUTO_UPDATE=0
 
 COPY --from=build /src/target/release/dev /usr/local/bin/dev
 
