@@ -10,7 +10,12 @@ use serde::{
 use crate::{
     Result,
     commands::ProjectCommand,
-    deps::{Dependency, brew::Brew, mise::Mise},
+    deps::{
+        Dependency,
+        brew::Brew,
+        mise::Mise,
+        rust::{self, Rust},
+    },
 };
 
 /// Resolves `${VAR}` in env values. Same contract as [`std::env::var`].
@@ -142,6 +147,10 @@ impl<'de> Visitor<'de> for DepsVisitor {
                 "brew" => {
                     let packages: Vec<String> = map.next_value()?;
                     deps.push(Box::new(Brew::new(packages)));
+                }
+                "rust" => {
+                    let entries: Vec<rust::Entry> = map.next_value()?;
+                    deps.push(Box::new(Rust::new(entries)));
                 }
                 // Reserved for a built-in dependency, so it can't be a tool.
                 // Fail while reading the value so the error points at this

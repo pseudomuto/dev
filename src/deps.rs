@@ -8,6 +8,7 @@ use crate::{
 
 pub mod brew;
 pub mod mise;
+pub mod rust;
 
 pub trait Dependency {
     fn name(&self) -> &str;

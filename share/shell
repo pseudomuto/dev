@@ -30,8 +30,14 @@ __dev_load() {
     . "$__dev_shell/zerobrew"
   fi
 
-  # mise: runs `mise activate` for this shell. It goes after zerobrew, so the
-  # tools mise manages come first on PATH.
+  # rustup: its own $CARGO_HOME/env, which puts cargo's bin dir on PATH.
+  if [ -f "$__dev_shell/rustup" ]; then
+    # shellcheck source=/dev/null
+    . "$__dev_shell/rustup"
+  fi
+
+  # mise: runs `mise activate` for this shell. It goes after zerobrew and
+  # rustup, so the tools mise manages come first on PATH.
   if [ -f "$__dev_shell/mise" ]; then
     # shellcheck source=/dev/null
     . "$__dev_shell/mise"

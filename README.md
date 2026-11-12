@@ -111,12 +111,23 @@ deps:
   brew:
     - jq
     - yq
+  rust:
+    - rust-toolchain.toml
+    - nightly: [rustfmt]
   node: lts
   python: "3.14"
   shellcheck: latest
 ```
 
 - `brew` installs zerobrew (or updates it to the latest release), then each package, upgrading any that are outdated.
+- `rust` installs rustup if it isn't already on `PATH` (into `~/.cargo`, without touching your rc files), then each
+  toolchain:
+  - `rust-toolchain.toml` installs what that file names: its channel, components, and targets.
+  - `nightly`, or `"1.80"` (quoted, so YAML keeps it as text), installs that toolchain.
+  - `nightly: [rustfmt]` installs a toolchain with those components.
+
+  A channel like `nightly` is installed once, not updated on every `dev up`. Everything after `rust` in the same
+  `dev up` finds `cargo`, e.g. a mise `cargo:` tool.
 - Every other key is a [mise](https://mise.jdx.dev) tool and its version. dev installs mise if it isn't already on
   `PATH`, and adds the tools to its own mise config (`~/.config/dev/mise.toml`), which mise loads alongside yours. Your
   own global mise config is never changed, and wins when both pin the same tool.

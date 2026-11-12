@@ -221,3 +221,54 @@ fn from_yaml_with_expands_from_the_given_lookup() -> Result<()> {
     assert_eq!("env `A` references `${HOME}`, which isn't set", err.to_string());
     Ok(())
 }
+
+#[test]
+fn from_yaml_parses_rust_toolchains_as_their_own_dependency() -> Result<()> {
+    let project = Project::from_yaml(
+        r#"
+name: demo
+deps:
+  rust:
+    - rust-toolchain.toml
+    - nightly: [rustfmt]
+    - "1.80"
+"#,
+    )?;
+
+    let names: Vec<&str> = project.deps.iter().map(|d| d.name()).collect();
+    assert_eq!(vec!["Install Rust"], names, "not a mise tool");
+    let tasks: Vec<&str> = project.deps[0].tasks().iter().map(|t| t.name()).collect();
+    assert_eq!(
+        vec![
+            "Install rustup",
+            "Installing the toolchain in rust-toolchain.toml",
+            "Installing Rust nightly",
+            "Installing Rust 1.80",
+        ],
+        tasks
+    );
+    Ok(())
+}
+
+#[test]
+fn from_yaml_rejects_unclear_rust_entries() {
+    let cases = [
+        ("- 1.80", "quoted, so YAML keeps it as text"),
+        (
+            "- nightly: [rustfmt]\n      beta: [clippy]",
+            "put `beta` in its own entry",
+        ),
+        (
+            "- rust-toolchain.toml: [clippy]",
+            "`rust-toolchain.toml` takes no components",
+        ),
+    ];
+    for (entries, want) in cases {
+        let yaml = format!("name: demo\ndeps:\n  rust:\n    {entries}\n");
+        let err = Project::from_yaml(&yaml)
+            .err()
+            .unwrap_or_else(|| panic!("should fail:\n{yaml}"));
+        let err = format!("{err:#}");
+        assert!(err.contains(want), "want `{want}` for:\n{yaml}\ngot: {err}");
+    }
+}
