@@ -20,7 +20,6 @@ RUN apt-get update \
 ENV LANG=C.UTF-8
 
 COPY --from=build /src/target/release/dev /usr/local/bin/dev
-COPY share/shell /usr/local/share/dev/shell
 
 # The zerobrew installer refuses to run as root.
 RUN useradd --create-home --shell /bin/bash tester \
@@ -29,8 +28,8 @@ RUN useradd --create-home --shell /bin/bash tester \
 USER tester
 # Same setup a dev user would add to their rc file. It makes `dev` a shell
 # function, so packages `dev up` installs work right away.
-RUN echo '. /usr/local/share/dev/shell' >> /home/tester/.bashrc \
-  && echo '. /usr/local/share/dev/shell' >> /home/tester/.zshrc
+RUN echo 'eval "$(dev shell-init)"' >> /home/tester/.bashrc \
+  && echo 'eval "$(dev shell-init)"' >> /home/tester/.zshrc
 
 WORKDIR /app
 COPY --chown=tester:tester testdata/dev.yaml ./dev.yaml

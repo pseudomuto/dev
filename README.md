@@ -168,7 +168,7 @@ How the long form works:
 
 A long-form command without `flags` or `args` passes its args through as is, like the short form.
 
-Command names can't match a built-in command (`up`, `down`, `help`). Commands always exit with their own status.
+Command names can't match a built-in command (`up`, `down`, `shell-init`, `hook-env`, `help`). Commands always exit with their own status.
 
 ## Commands
 
@@ -176,6 +176,7 @@ Command names can't match a built-in command (`up`, `down`, `help`). Commands al
 | ------------------ | ------------------------------------------------------------------------- |
 | `dev up`           | Installs or updates every dependency in `./dev.yaml` that isn't current.  |
 | `dev down`         | Takes down every dependency, last one first.                              |
+| `dev shell-init`   | Prints the shell setup, for `eval "$(dev shell-init)"` in your rc file.   |
 | `dev <name> [...]` | Runs a command from the `commands` section.                               |
 
 `dev --help` lists the project's commands under the built-in ones, with their `desc`.
@@ -199,7 +200,7 @@ there's nothing to add to yours.
 
 ## How env is loaded
 
-With the shell setup sourced, your shell picks up `env` from every `dev.yaml` that applies to the current directory,
+With the shell setup loaded, your shell picks up `env` from every `dev.yaml` that applies to the current directory,
 before each prompt. They're layered, outermost first:
 
 1. `~/.config/dev.yaml` (or `$XDG_CONFIG_HOME/dev.yaml`), which applies everywhere.
@@ -224,7 +225,7 @@ Tasks run with [mise](https://mise.jdx.dev):
 | `mise run test:ci`     | Runs everything CI does: format, lints, tests.   |
 | `mise run test:docker` | Opens a shell in a throwaway Linux container.    |
 
-`test:docker` builds an image with dev installed, the shell setup sourced, and `testdata/dev.yaml` as the project, so
+`test:docker` builds an image with dev installed, the shell setup loaded, and `testdata/dev.yaml` as the project, so
 you can try `dev up` for real without touching your machine.
 
 Tests never touch the network or your machine's setup: they run `dev` with a temporary `$HOME` and a stripped

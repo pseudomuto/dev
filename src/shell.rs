@@ -14,6 +14,10 @@ pub mod env;
 
 pub use dir::ShellDir;
 
+/// `share/shell`, printed by `dev shell-init` for rc files to eval. Built in
+/// so it always matches the `dev` that prints it.
+pub const SETUP: &str = include_str!("../share/shell");
+
 /// `$HOME`, failing when it's unset or empty.
 pub fn home() -> crate::Result<PathBuf> {
     std::env::var_os("HOME")

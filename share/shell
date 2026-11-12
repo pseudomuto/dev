@@ -1,9 +1,9 @@
 # shellcheck shell=sh
 #
-# Shell setup for tools that `dev` installs. Source it from your shell's rc
-# file (.zshrc, .bashrc, ...):
+# Shell setup for tools that `dev` installs. It's built into `dev`, so load
+# it from your shell's rc file (.zshrc, .bashrc, ...) with:
 #
-#   . /usr/local/share/dev/shell
+#   eval "$(dev shell-init)"
 #
 # The setup itself is generated per user by `dev`, into
 # $XDG_DATA_HOME/dev/shell (~/.local/share/dev/shell by default). Each file

@@ -353,6 +353,23 @@ fn commands_named_down_are_rejected() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn shell_init_prints_the_shell_setup_anywhere() -> Result<()> {
+    // No dev.yaml: it's run from rc files, wherever the shell starts.
+    let dir = tempfile::tempdir()?;
+    let output = dev(&dir, &["shell-init"])?;
+
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let want = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/share/shell"))?;
+    assert_eq!(want, String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
 /// Runs `dev hook-env` in `$HOME/<rel>`, with `home` as `$HOME` so the real
 /// user's global dev.yaml is never read.
 #[allow(clippy::disallowed_methods)]

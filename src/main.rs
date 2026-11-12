@@ -34,6 +34,9 @@ enum Command {
     Up,
     /// Take down every dependency in ./dev.yaml, last one first
     Down,
+    /// Print the shell setup. Add `eval "$(dev shell-init)"` to your
+    /// .zshrc or .bashrc
+    ShellInit,
     /// Print the sh code that loads dev.yaml env into the shell. Run by
     /// `share/shell` before every prompt.
     #[command(hide = true)]
@@ -49,12 +52,19 @@ async fn main() -> Result<()> {
     let cli = parse_cli();
     let vars = process_env()?;
 
-    // Runs anywhere, with or without ./dev.yaml.
-    if let Command::HookEnv = cli.command {
-        if let Some(script) = shell::env::hook(&vars)? {
-            print!("{script}");
+    // These run anywhere, with or without ./dev.yaml.
+    match cli.command {
+        Command::ShellInit => {
+            print!("{}", shell::SETUP);
+            return Ok(());
         }
-        return Ok(());
+        Command::HookEnv => {
+            if let Some(script) = shell::env::hook(&vars)? {
+                print!("{script}");
+            }
+            return Ok(());
+        }
+        _ => {}
     }
 
     let project = Project::load(PROJECT_FILE)?;
@@ -74,7 +84,7 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
-        Command::HookEnv => unreachable!("handled before loading dev.yaml"),
+        Command::ShellInit | Command::HookEnv => unreachable!("handled before loading dev.yaml"),
         Command::Up => with_run_log(&mut ctx, "up", &project.name, |ctx| dev::up(ctx, &project))?,
         Command::Down => with_run_log(&mut ctx, "down", &project.name, |ctx| dev::down(ctx, &project))?,
         Command::Project(args) => {
