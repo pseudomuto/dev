@@ -1,6 +1,6 @@
 mod common;
 
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use common::capturing_ctx;
 use dev::{
@@ -16,11 +16,15 @@ use tempfile::{TempDir, tempdir};
 /// Writes an executable shell script to `dir/name` and returns its path.
 fn script(dir: &TempDir, name: &str, body: &str) -> Result<PathBuf> {
     let path = dir.path().join(name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, format!("#!/bin/sh\n{body}\n"))?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+    common::write_executable(
+        &path,
+        format!(
+            "#!/bin/sh
+{body}
+"
+        )
+        .as_bytes(),
+    )?;
     Ok(path)
 }
 

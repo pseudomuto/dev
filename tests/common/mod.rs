@@ -1,7 +1,10 @@
 use std::{
     cell::RefCell,
     fmt::Display,
+    fs,
     io::{self, Write},
+    path::Path,
+    process::{Command, Stdio},
     rc::Rc,
     sync::{Arc, Mutex},
 };
@@ -232,4 +235,44 @@ pub fn recording_ctx() -> (Context, Events) {
         ..Context::default()
     };
     (ctx, events)
+}
+
+/// Writes `contents` to an executable file at `path`, creating its dir.
+///
+/// The file is written by a short-lived `sh`, never by the test process. On
+/// Linux, a file that's open for writing can't be run (`ETXTBSY`), and tests
+/// run on parallel threads: a child another thread forks while this process
+/// has the file open inherits that handle until it execs. Writing it here
+/// would make running it fail now and then. Only the `sh` ever has it open.
+#[allow(dead_code, clippy::disallowed_methods)]
+pub fn write_executable(path: &Path, contents: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut child = Command::new("sh")
+        .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()?;
+    // Dropped right after, so `cat` sees the end of its input.
+    child.stdin.take().expect("stdin is piped").write_all(contents)?;
+    if !child.wait()?.success() {
+        bail!("failed to write {}", path.display());
+    }
+    Ok(())
+}
+
+/// Copies the executable `from` to `to`. Done by `cp` for the same reason
+/// [`write_executable`] uses `sh`.
+#[allow(dead_code, clippy::disallowed_methods)]
+pub fn copy_executable(from: &Path, to: &Path) -> Result<()> {
+    let status = Command::new("sh")
+        .args(["-c", r#"cp "$1" "$2" && chmod 755 "$2""#, "sh"])
+        .arg(from)
+        .arg(to)
+        .status()?;
+    if !status.success() {
+        bail!("failed to copy {} to {}", from.display(), to.display());
+    }
+    Ok(())
 }

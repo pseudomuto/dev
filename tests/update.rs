@@ -16,6 +16,8 @@ use dev::{
 };
 use tempfile::TempDir;
 
+mod common;
+
 /// Every target `install.sh` can pick, so the fake release works anywhere.
 const TARGETS: &[&str] = &[
     "aarch64-apple-darwin",
@@ -34,7 +36,7 @@ impl Sandbox {
         let dir = tempfile::tempdir()?;
         fs::create_dir_all(dir.path().join("bin"))?;
         fs::create_dir_all(dir.path().join("home"))?;
-        fs::copy(env!("CARGO_BIN_EXE_dev"), dir.path().join("bin/dev"))?;
+        common::copy_executable(env!("CARGO_BIN_EXE_dev").as_ref(), &dir.path().join("bin/dev"))?;
         Ok(Self { dir })
     }
 

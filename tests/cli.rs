@@ -12,6 +12,8 @@ use std::process::{Command, Output};
 use dev::Result;
 use tempfile::TempDir;
 
+mod common;
+
 /// Env vars that point dev, mise or zerobrew somewhere other than `$HOME`.
 /// Removed so everything they'd write lands under the test's `$HOME`.
 const HOME_OVERRIDES: &[&str] = &[
@@ -185,8 +187,6 @@ fn declared_commands_get_help_and_usage_errors() -> Result<()> {
 
 #[test]
 fn file_commands_run_the_script_next_to_dev_yaml() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = project_dir(
         r#"name: demo
 commands:
@@ -204,10 +204,7 @@ commands:
         ("bare.sh", "#!/bin/sh\necho \"bare|$*\"\n"),
     ];
     for (path, body) in scripts {
-        let path = dir.path().join(path);
-        std::fs::create_dir_all(path.parent().expect("scripts have a parent"))?;
-        std::fs::write(&path, body)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        common::write_executable(&dir.path().join(path), body.as_bytes())?;
     }
 
     let cases: [(&[&str], &str); 2] = [
