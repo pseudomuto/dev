@@ -220,6 +220,43 @@ commands:
 }
 
 #[test]
+fn help_lists_project_commands() -> Result<()> {
+    let dir = project_dir(COMMANDS_YAML)?;
+    let output = dev(&dir, &["--help"])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(Some(0), output.status.code(), "stdout: {stdout}");
+    assert!(stdout.contains("Commands:\n  up "), "built-ins still listed: {stdout}");
+    assert!(
+        stdout.contains("Project commands:\n  deploy  Deploy an app\n  fail\n  hello\n"),
+        "stdout: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn help_works_without_a_valid_dev_yaml() -> Result<()> {
+    let none = tempfile::tempdir()?;
+    let output = dev(&none, &["--help"])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(Some(0), output.status.code(), "stdout: {stdout}");
+    assert!(
+        !stdout.contains("Project commands"),
+        "no dev.yaml, no section: {stdout}"
+    );
+
+    let invalid = project_dir("name: Not Valid\n")?;
+    let output = dev(&invalid, &["--help"])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(Some(0), output.status.code(), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Project commands:\n  (dev.yaml is invalid: project name `Not Valid` must be lowercase"),
+        "stdout: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn project_commands_exit_with_their_own_code() -> Result<()> {
     let dir = project_dir(COMMANDS_YAML)?;
     let output = dev(&dir, &["fail"])?;

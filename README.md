@@ -178,6 +178,8 @@ Command names can't match a built-in command (`up`, `down`, `help`). Commands al
 | `dev down`         | Takes down every dependency, last one first.                              |
 | `dev <name> [...]` | Runs a command from the `commands` section.                               |
 
+`dev --help` lists the project's commands under the built-in ones, with their `desc`.
+
 `dev down` currently leaves zerobrew, mise, and what they installed in place, since other projects may use them.
 
 On a terminal, `dev up` and `dev down` show live progress. Set `DEV_UI=plain` for plain lines instead, which is also

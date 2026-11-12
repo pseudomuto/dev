@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use color_eyre::{
     Section,
     eyre::{Result, WrapErr, bail},
@@ -46,7 +46,10 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
-    let cli = Cli::parse();
+    // Read first so `dev --help` can list its commands. Failing is fine
+    // until a command needs it.
+    let loaded = Project::load(PROJECT_FILE);
+    let cli = parse_cli(&loaded);
     let vars = process_env()?;
 
     // Runs anywhere, with or without ./dev.yaml.
@@ -57,7 +60,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let project = Project::load(PROJECT_FILE)?;
+    let project = loaded?;
     reject_built_in_names(&project)?;
 
     // A shell that already loaded this dev.yaml has its env, so expanding it
@@ -85,6 +88,46 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parses the command line, exiting on errors and `--help`. The help lists
+/// the commands in `loaded` (./dev.yaml), if there is one.
+fn parse_cli(loaded: &Result<Project>) -> Cli {
+    let mut cmd = Cli::command();
+    if let Some(help) = project_commands_help(&cmd, loaded) {
+        cmd = cmd.after_help(help);
+    }
+    let matches = cmd.get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+}
+
+/// A "Project commands:" section for `dev --help`, styled like clap's own
+/// sections. `None` without a dev.yaml or when it has no commands. An
+/// invalid one gets a note instead of a list, so help still works.
+fn project_commands_help(cmd: &clap::Command, loaded: &Result<Project>) -> Option<String> {
+    let styles = cmd.get_styles();
+    let (header, literal) = (styles.get_header(), styles.get_literal());
+    let mut help = format!("{header}Project commands:{header:#}\n");
+
+    match loaded {
+        Ok(project) if project.commands.is_empty() => return None,
+        Ok(project) => {
+            let width = project.commands.keys().map(String::len).max().unwrap_or_default();
+            for (name, command) in &project.commands {
+                match &command.desc {
+                    Some(desc) => help.push_str(&format!("  {literal}{name:<width$}{literal:#}  {desc}\n")),
+                    None => help.push_str(&format!("  {literal}{name}{literal:#}\n")),
+                }
+            }
+        }
+        Err(_) if !Path::new(PROJECT_FILE).exists() => return None,
+        Err(e) => {
+            let cause = e.root_cause().to_string();
+            let cause = cause.lines().next().unwrap_or_default();
+            help.push_str(&format!("  ({PROJECT_FILE} is invalid: {cause})\n"));
+        }
+    }
+    Some(help)
 }
 
 /// Runs `f` (the `command` run, e.g. `up`, for `project`) with progress
