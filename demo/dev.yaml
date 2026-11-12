@@ -1,0 +1,25 @@
+name: demo
+
+env:
+  GREETING: Hello from dev
+
+deps:
+  brew:
+    - jq
+  yq: latest
+
+commands:
+  greet:
+    desc: Greet someone
+    flags:
+      loud: { short: l, type: bool, desc: Shout it }
+    args:
+      - name: who
+        default: world
+    run: |
+      msg="$GREETING, $WHO!"
+      if [ "$LOUD" = true ]; then
+        echo "$msg" | tr '[:lower:]' '[:upper:]'
+      else
+        echo "$msg"
+      fi

@@ -44,6 +44,10 @@ description = "Build a throwaway container with dev and a sample dev.yaml, and o
 raw = true
 run = ["docker build -t dev-test .", "docker run --rm -it dev-test"]
 
+[tasks.demo]
+description = "Record demo/demo.gif with VHS in a throwaway container (needs Docker and network)"
+run = ["docker build -f demo/Dockerfile -t dev-demo .", "docker run --rm -v \"$PWD/demo:/vhs\" dev-demo"]
+
 [tasks."test:verbose"]
 description = "Run the tests without capturing output"
 run = "cargo test --all-features -- --no-capture"

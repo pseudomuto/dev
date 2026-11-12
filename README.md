@@ -5,6 +5,8 @@
 [![Rust 1.99.0](https://img.shields.io/badge/rust-1.99.0-orange.svg?logo=rust)](rust-toolchain.toml)
 ![Platforms: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
 
+![dev up installing a brew package and a mise tool, env loading on cd, and a project command with flags](demo/demo.gif)
+
 `dev` sets up a project's development environment from a `dev.yaml` at its root. Describe the tools, packages, env
 vars, and commands the project needs, and anyone can get going with:
 
@@ -253,6 +255,7 @@ Tasks run with [mise](https://mise.jdx.dev):
 | `mise run fmt`         | Formats the code (needs nightly rustfmt).        |
 | `mise run test:ci`     | Runs everything CI does: format, lints, tests.   |
 | `mise run test:docker` | Opens a shell in a throwaway Linux container.    |
+| `mise run demo`        | Records `demo/demo.gif` in a container.          |
 
 `test:docker` builds an image with dev installed, the shell setup loaded, and `testdata/dev.yaml` as the project, so
 you can try `dev up` for real without touching your machine.
