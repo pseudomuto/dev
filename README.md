@@ -23,23 +23,34 @@ What it handles:
 
 ## Install
 
-Build it from source (needs Rust; the version is pinned in `rust-toolchain.toml`):
-
 ```sh
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/pseudomuto/dev/main/install.sh | sh
 ```
 
-Then copy the shell setup somewhere and source it from your shell's rc file (`.zshrc`, `.bashrc`, ...):
+This installs the latest release for your machine (macOS or Linux, x86_64 or arm64) to `~/.local/bin/dev`, after
+checking it against the release's checksums. It doesn't change anything else: it prints what to add to your shell's rc
+file (`.zshrc`, `.bashrc`, ...), which is:
 
 ```sh
-sudo mkdir -p /usr/local/share/dev
-sudo cp share/shell /usr/local/share/dev/shell
-echo '. /usr/local/share/dev/shell' >> ~/.zshrc
+eval "$(dev shell-init)"
 ```
 
 The shell setup is what makes tools available right after `dev up`, and loads project env as you move between
 directories. `dev` works without it, but you'd have to open a new shell after each `dev up`. bash and zsh are
 supported.
+
+To pick the version or where it goes, set these for `sh`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pseudomuto/dev/main/install.sh | DEV_VERSION=0.1.0 DEV_INSTALL_DIR=/usr/local/bin sh
+```
+
+Run the same command again to update. To build from source instead (the Rust version is pinned in
+`rust-toolchain.toml`):
+
+```sh
+cargo install --path .
+```
 
 ## Quick start
 

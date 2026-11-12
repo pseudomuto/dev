@@ -70,7 +70,7 @@ run = "actionlint"
 
 [tasks."lint:shell"]
 description = "Lint the shell scripts"
-run = "shellcheck share/shell"
+run = "shellcheck share/shell install.sh"
 
 [tasks."lint:fix"]
 description = "Run clippy and auto-fix where possible"
