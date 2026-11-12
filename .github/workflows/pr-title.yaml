@@ -1,0 +1,65 @@
+name: PR title
+
+# PR titles become the commit subjects on main (squash merges) and the lines
+# in release notes, so they must be Conventional Commits. This checks the
+# title and labels the PR by its type, which .github/release.yml groups.
+#
+# pull_request_target so it can label PRs from forks too. It never checks
+# out or runs PR code, and the title only reaches the script through env.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  title:
+    name: check and label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title and set labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          re='^([a-z]+)(\([a-z0-9._/-]+\))?(!)?: .+'
+          if [[ ! $TITLE =~ $re ]]; then
+            echo "::error::PR titles must be Conventional Commits, e.g. 'feat: add a rust dependency' or 'fix(shell)!: ...'. Got: $TITLE"
+            exit 1
+          fi
+          type=${BASH_REMATCH[1]}
+          breaking=${BASH_REMATCH[3]}
+
+          case "$type" in
+            feat) want=enhancement ;;
+            fix) want=bug ;;
+            perf) want=performance ;;
+            docs) want=documentation ;;
+            build | chore | ci | refactor | revert | style | test) want= ;;
+            *)
+              echo "::error::unknown type '$type'. Use feat, fix, perf, docs, build, chore, ci, refactor, revert, style, or test."
+              exit 1
+              ;;
+          esac
+          [ -n "$breaking" ] && want="$want breaking"
+
+          # The two labels GitHub doesn't create by default.
+          gh label create breaking --repo "$GITHUB_REPOSITORY" --color B60205 \
+            --description "Breaking change" --force
+          gh label create performance --repo "$GITHUB_REPOSITORY" --color 0E8A16 \
+            --description "Performance improvement" --force
+
+          # Only labels this workflow manages, so a retitled PR loses the old
+          # type's label but keeps any added by hand.
+          args=()
+          for label in breaking bug documentation enhancement performance; do
+            case " $want " in
+              *" $label "*) args+=(--add-label "$label") ;;
+              *) args+=(--remove-label "$label") ;;
+            esac
+          done
+          gh pr edit "$NUMBER" --repo "$GITHUB_REPOSITORY" "${args[@]}"
