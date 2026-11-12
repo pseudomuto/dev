@@ -7,6 +7,8 @@ WORKDIR /src
 # rustup download macOS/musl targets this build doesn't need.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# Built into the binary for `dev shell-init`.
+COPY share ./share
 RUN cargo build --release --locked
 
 FROM debian:trixie-slim
