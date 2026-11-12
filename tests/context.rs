@@ -3,18 +3,22 @@ mod common;
 use std::io::Write;
 
 use common::Buffer;
-use dev::{Context, Result};
+use dev::{
+    Context,
+    Result,
+    report::{Plain, Status},
+};
 
 #[test]
-fn can_set_out() -> Result<()> {
+fn can_set_reporter() -> Result<()> {
     let out = Buffer::default();
     let mut ctx = Context {
-        out: Box::new(out.clone()),
+        reporter: Box::new(Plain::new(Box::new(out.clone()))),
         ..Context::default()
     };
 
-    write!(ctx.out, "Some output")?;
-    assert_eq!("Some output", out.to_string());
+    ctx.reporter.step(1, "Installing jq", Status::Applying)?;
+    assert_eq!("  Installing jq ... applying\n", out.to_string());
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 mod common;
 
-use common::capturing_ctx;
+use common::{capturing_ctx, recording_ctx};
 use dev::{Result, process};
 
 #[test]
@@ -78,5 +78,25 @@ fn run_ends_output_with_a_newline_so_the_next_log_line_starts_fresh() -> Result<
     process::run(&mut ctx, cmd.args(["-c", "printf 'no newline'"]))?;
 
     assert_eq!("$ sh -c 'printf '\\''no newline'\\'''\nno newline\n", log.to_string());
+    Ok(())
+}
+
+#[test]
+fn run_sends_each_line_to_the_reporter_as_a_terminal_shows_it() -> Result<()> {
+    let (mut ctx, events) = recording_ctx();
+    let mut cmd = ctx.command("sh");
+    process::run(&mut ctx, cmd.args(["-c", r"echo one; printf '10%%\r100%%\n'"]))?;
+
+    assert_eq!(vec!["output one", "output 100%"], *events.lock().unwrap());
+    Ok(())
+}
+
+#[test]
+fn run_interactive_pauses_the_reporter_around_the_command() -> Result<()> {
+    let (mut ctx, events) = recording_ctx();
+    let mut cmd = ctx.command("sh");
+    process::run_interactive(&mut ctx, cmd.args(["-c", "echo hi"]))?;
+
+    assert_eq!(vec!["pause", "output hi", "resume"], *events.lock().unwrap());
     Ok(())
 }

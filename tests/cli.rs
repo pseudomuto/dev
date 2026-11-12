@@ -22,6 +22,8 @@ const HOME_OVERRIDES: &[&str] = &[
     "MISE_INSTALL_PATH",
     "ZEROBREW_BIN",
     "ZEROBREW_DIR",
+    // Not a location, but it changes what `dev up` prints.
+    "DEV_UI",
 ];
 
 /// Runs `dev <args>` in `dir`, with `$HOME` at `dir/home` and a `PATH` with
@@ -29,8 +31,13 @@ const HOME_OVERRIDES: &[&str] = &[
 ///
 /// A plain `Command` on purpose: this starts `dev` itself, which must not
 /// inherit any project env from a `Context`.
-#[allow(clippy::disallowed_methods)]
 fn dev(dir: &TempDir, args: &[&str]) -> Result<Output> {
+    dev_with(dir, args, &[])
+}
+
+/// Like [`dev`], with `vars` set on top.
+#[allow(clippy::disallowed_methods)]
+fn dev_with(dir: &TempDir, args: &[&str], vars: &[(&str, &str)]) -> Result<Output> {
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home)?;
 
@@ -42,6 +49,7 @@ fn dev(dir: &TempDir, args: &[&str]) -> Result<Output> {
     for var in HOME_OVERRIDES {
         cmd.env_remove(var);
     }
+    cmd.envs(vars.iter().copied());
     Ok(cmd.output()?)
 }
 
@@ -230,5 +238,19 @@ fn hook_env_fails_on_invalid_dev_yaml_without_printing_a_script() -> Result<()> 
     assert_eq!(Some(1), output.status.code(), "stderr: {stderr}");
     assert!(stderr.contains("must be lowercase words"), "stderr: {stderr}");
     assert!(output.stdout.is_empty(), "the shell must eval nothing");
+    Ok(())
+}
+
+#[test]
+fn up_rejects_an_unknown_dev_ui() -> Result<()> {
+    let dir = project_dir("name: demo\n")?;
+    let output = dev_with(&dir, &["up"], &[("DEV_UI", "fancy")])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(Some(1), output.status.code(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("unknown DEV_UI `fancy`; the only option is `plain`"),
+        "stderr: {stderr}"
+    );
     Ok(())
 }

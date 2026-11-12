@@ -12,6 +12,7 @@ use dev::{
     Result,
     deps::{Dependency, Task, meet_tasks},
     project::Project,
+    report::{Plain, Reporter, Status},
 };
 
 #[derive(Clone, Default)]
@@ -33,14 +34,14 @@ impl Display for Buffer {
     }
 }
 
-/// A context whose `out` and `log` write to buffers the test can read, in
-/// that order. `err` goes to a buffer nobody reads.
+/// A context whose reporter (plain lines) and `log` write to buffers the
+/// test can read, in that order. `err` goes to a buffer nobody reads.
 // Each tests/*.rs file compiles this module separately, and not all of them use it.
 #[allow(dead_code)]
 pub fn capturing_ctx() -> (Context, Buffer, Buffer) {
     let (out, log) = (Buffer::default(), Buffer::default());
     let ctx = Context {
-        out: Box::new(out.clone()),
+        reporter: Box::new(Plain::new(Box::new(out.clone()))),
         err: Box::new(Buffer::default()),
         log: Box::new(log.clone()),
         ..Context::default()
@@ -173,4 +174,62 @@ pub fn project(deps: Vec<FakeDep>) -> Project {
         commands: Default::default(),
         deps: deps.into_iter().map(|d| Box::new(d) as Box<dyn Dependency>).collect(),
     }
+}
+
+/// Every call a [`Recorder`] got, e.g. `["0 a checking", "output hi"]`.
+#[allow(dead_code)]
+pub type Events = Arc<Mutex<Vec<String>>>;
+
+/// A reporter that records every call into shared [`Events`].
+#[allow(dead_code)]
+pub struct Recorder(pub Events);
+
+impl Reporter for Recorder {
+    fn start(&mut self, command: &str, project: &str) -> Result<()> {
+        self.0.lock().unwrap().push(format!("start {command} {project}"));
+        Ok(())
+    }
+
+    fn step(&mut self, depth: usize, name: &str, status: Status) -> Result<()> {
+        self.0.lock().unwrap().push(format!("{depth} {name} {status}"));
+        Ok(())
+    }
+
+    fn output(&mut self, line: &str) -> Result<()> {
+        self.0.lock().unwrap().push(format!("output {line}"));
+        Ok(())
+    }
+
+    fn pause(&mut self) -> Result<()> {
+        self.0.lock().unwrap().push("pause".into());
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        self.0.lock().unwrap().push("resume".into());
+        Ok(())
+    }
+
+    fn finish(&mut self, ok: bool) -> Result<()> {
+        self.0.lock().unwrap().push(format!("finish {ok}"));
+        Ok(())
+    }
+
+    fn error(&mut self, err: &color_eyre::Report, _log: &std::path::Path) -> Result<bool> {
+        self.0.lock().unwrap().push(format!("error {err}"));
+        Ok(false)
+    }
+}
+
+/// A context that records reporter calls into the returned [`Events`].
+#[allow(dead_code)]
+pub fn recording_ctx() -> (Context, Events) {
+    let events = Events::default();
+    let ctx = Context {
+        reporter: Box::new(Recorder(Arc::clone(&events))),
+        err: Box::new(Buffer::default()),
+        log: Box::new(Buffer::default()),
+        ..Context::default()
+    };
+    (ctx, events)
 }

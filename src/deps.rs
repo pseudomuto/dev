@@ -1,8 +1,10 @@
-use std::{fmt, io::Write};
-
 use color_eyre::eyre::WrapErr;
 
-use crate::{Context, Result};
+use crate::{
+    Context,
+    Result,
+    report::{self, Status},
+};
 
 pub mod brew;
 pub mod mise;
@@ -25,43 +27,9 @@ pub trait Dependency {
     fn down(&self, ctx: &mut Context) -> Result<()>;
 }
 
-/// What a status line says about a dependency or task.
-#[derive(Clone, Copy)]
-pub(crate) enum Status {
-    /// Nothing to do.
-    Met,
-    /// About to be met or applied.
-    Applying,
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Status::Met => "met",
-            Status::Applying => "applying",
-        })
-    }
-}
-
-/// How far task status lines are indented under their dependency's.
-const TASK_INDENT: &str = "  ";
-
-/// Writes a status line to `ctx.out`, e.g. `  Installing jq ... applying`.
-/// Every status line goes through here, so they all look the same.
-///
-/// Applying also starts a section in `ctx.log` (`== Installing jq`), so the
-/// output of the commands that follow is easy to find.
-pub(crate) fn report(ctx: &mut Context, indent: &str, name: &str, status: Status) -> Result<()> {
-    writeln!(ctx.out, "{indent}{name} ... {status}")?;
-    if let Status::Applying = status {
-        writeln!(ctx.log, "== {name}")?;
-    }
-    Ok(())
-}
-
-/// Applies each of `tasks` that isn't already applied, in order, writing a
-/// status line for each to `ctx.out`. Stops at the first failure, naming the
-/// task.
+/// Applies each of `tasks` that isn't already applied, in order, reporting
+/// each one's progress to `ctx.reporter` as a step at depth 1. Stops at the
+/// first failure, naming the task.
 ///
 /// Each task is checked just before it's applied, since later tasks can rely
 /// on earlier ones (e.g. packages need zerobrew).
@@ -69,17 +37,21 @@ pub(crate) fn report(ctx: &mut Context, indent: &str, name: &str, status: Status
 /// For dependencies made of tasks, as their [`Dependency::meet`].
 pub fn meet_tasks(tasks: &[Box<dyn Task>], ctx: &mut Context) -> Result<()> {
     for task in tasks {
-        let applied = task
-            .is_applied(ctx)
-            .wrap_err_with(|| format!("failed to check task: {}", task.name()))?;
+        let name = task.name();
+        report::step(ctx, 1, name, Status::Checking)?;
+        let applied = task.is_applied(ctx);
+        let applied =
+            report::failing(ctx, 1, name, applied).wrap_err_with(|| format!("failed to check task: {name}"))?;
 
         if applied {
-            report(ctx, TASK_INDENT, task.name(), Status::Met)?;
-        } else {
-            report(ctx, TASK_INDENT, task.name(), Status::Applying)?;
-            task.apply(ctx)
-                .wrap_err_with(|| format!("task failed: {}", task.name()))?;
+            report::step(ctx, 1, name, Status::Met)?;
+            continue;
         }
+
+        report::step(ctx, 1, name, Status::Applying)?;
+        let res = task.apply(ctx);
+        report::failing(ctx, 1, name, res).wrap_err_with(|| format!("task failed: {name}"))?;
+        report::step(ctx, 1, name, Status::Done)?;
     }
 
     Ok(())

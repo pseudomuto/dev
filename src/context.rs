@@ -3,6 +3,8 @@ use std::{
     process::Command,
 };
 
+use crate::report::{Plain, Reporter};
+
 /// Shared state passed to every [`Dependency`](crate::deps::Dependency) and
 /// [`Task`](crate::deps::Task) operation.
 ///
@@ -12,41 +14,43 @@ use std::{
 ///
 /// # Examples
 ///
-/// Use the defaults to write to stdout and stderr:
+/// Use the defaults to report progress plainly to stdout and write
+/// diagnostics to stderr:
 ///
 /// ```
 /// use std::io::Write;
-/// use dev::Context;
+/// use dev::{Context, report::Status};
 ///
 /// let mut ctx = Context::default();
-/// writeln!(ctx.out, "installing...")?;
+/// ctx.reporter.step(0, "Install tools", Status::Applying)?;
 /// writeln!(ctx.err, "something went sideways")?;
-/// # Ok::<(), std::io::Error>(())
+/// # Ok::<(), color_eyre::eyre::Report>(())
 /// ```
 ///
-/// Swap out a single stream and keep the default for the other:
+/// Swap out a single stream and keep the defaults for the rest:
 ///
 /// ```
 /// use std::io::{self, Write};
 /// use dev::Context;
 ///
 /// let mut ctx = Context {
-///     out: Box::new(io::sink()),
+///     log: Box::new(io::sink()),
 ///     ..Context::default()
 /// };
-/// writeln!(ctx.out, "this goes nowhere")?;
+/// writeln!(ctx.log, "this goes nowhere")?;
 /// # Ok::<(), std::io::Error>(())
 /// ```
 pub struct Context {
-    /// Where normal output goes. Defaults to stdout.
-    pub out: Box<dyn Write + Send>,
+    /// Shows the progress of dependencies and tasks. Defaults to
+    /// [`Plain`] on stdout.
+    pub reporter: Box<dyn Reporter>,
 
     /// Where errors and diagnostics go. Defaults to stderr.
     pub err: Box<dyn Write + Send>,
 
     /// Where the output of commands dev runs goes (see
-    /// [`process::run`](crate::process::run)), so `out` only has dev's own
-    /// status lines. `dev up` and `dev down` point it at a file in
+    /// [`process::run`](crate::process::run)), so the terminal only has
+    /// dev's own progress. `dev up` and `dev down` point it at a file in
     /// `.dev/log`. Defaults to stderr.
     pub log: Box<dyn Write + Send>,
 
@@ -68,11 +72,11 @@ impl Context {
 }
 
 impl Default for Context {
-    /// Creates a context that writes to the process's stdout and stderr, with
-    /// command output on stderr.
+    /// Creates a context that reports progress plainly on stdout, with
+    /// diagnostics and command output on stderr.
     fn default() -> Self {
         Self {
-            out: Box::new(io::stdout()),
+            reporter: Box::new(Plain::new(Box::new(io::stdout()))),
             err: Box::new(io::stderr()),
             log: Box::new(io::stderr()),
             env: Vec::new(),

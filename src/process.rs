@@ -6,7 +6,7 @@ use std::{
 
 use color_eyre::eyre::{WrapErr, bail};
 
-use crate::{Context, Result};
+use crate::{Context, Result, report::Reporter};
 
 /// How many lines of a failed command's output its error includes.
 const TAIL_LINES: usize = 20;
@@ -26,9 +26,15 @@ pub fn run(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
 }
 
 /// Like [`run`], but stdin stays attached to dev's, so the command can
-/// prompt, e.g. sudo asking for a password.
+/// prompt, e.g. sudo asking for a password. The reporter is paused
+/// meanwhile, so it doesn't draw over the prompt.
 pub fn run_interactive(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
-    run_logged(ctx, cmd.stdin(Stdio::inherit()))
+    ctx.reporter.pause()?;
+    let res = run_logged(ctx, cmd.stdin(Stdio::inherit()));
+    let resumed = ctx.reporter.resume();
+    // The command's failure is the one worth reporting.
+    res?;
+    resumed
 }
 
 fn run_logged(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
@@ -47,7 +53,7 @@ fn run_logged(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = spawned.wrap_err_with(|| format!("failed to start `{program}`"))?;
 
-    let tail = match copy_output(reader, &mut ctx.log) {
+    let tail = match copy_output(reader, &mut ctx.log, ctx.reporter.as_mut()) {
         Ok(tail) => tail,
         Err(e) => {
             // Don't leave it running, or blocked on a pipe nobody reads.
@@ -70,8 +76,8 @@ fn run_logged(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
 
 /// Copies `reader` to `log` line by line, ending it with a newline if it
 /// didn't, and returns the last [`TAIL_LINES`] lines, indented, for an error
-/// message.
-fn copy_output(reader: impl io::Read, log: &mut dyn Write) -> io::Result<Vec<String>> {
+/// message. Each line also goes to `reporter`, as a terminal would show it.
+fn copy_output(reader: impl io::Read, log: &mut dyn Write, reporter: &mut dyn Reporter) -> Result<Vec<String>> {
     let mut reader = BufReader::new(reader);
     let mut tail = VecDeque::with_capacity(TAIL_LINES);
     let mut line = Vec::new();
@@ -86,6 +92,7 @@ fn copy_output(reader: impl io::Read, log: &mut dyn Write) -> io::Result<Vec<Str
         // A progress bar redraws itself after each `\r`; only the last
         // drawing is what a terminal would show.
         let shown = text.rsplit('\r').next().unwrap_or_default();
+        reporter.output(shown)?;
         if tail.len() == TAIL_LINES {
             tail.pop_front();
         }

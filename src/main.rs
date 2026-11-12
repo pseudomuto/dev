@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, env, path::Path};
+use std::{
+    collections::BTreeMap,
+    env,
+    io::{self, IsTerminal},
+    path::Path,
+};
 
 use clap::{CommandFactory, Parser, Subcommand};
 use color_eyre::{
@@ -8,6 +13,7 @@ use color_eyre::{
 use dev::{
     Context,
     project::Project,
+    report::{Plain, Reporter, clack::Clack},
     run_log::{self, RunLog},
     shell,
 };
@@ -69,8 +75,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::HookEnv => unreachable!("handled before loading dev.yaml"),
-        Command::Up => with_run_log(&mut ctx, "up", |ctx| dev::up(ctx, &project))?,
-        Command::Down => with_run_log(&mut ctx, "down", |ctx| dev::down(ctx, &project))?,
+        Command::Up => with_run_log(&mut ctx, "up", &project.name, |ctx| dev::up(ctx, &project))?,
+        Command::Down => with_run_log(&mut ctx, "down", &project.name, |ctx| dev::down(ctx, &project))?,
         Command::Project(args) => {
             let (name, args) = args.split_first().expect("clap passes the command name first");
             let code = dev::run_command(&ctx, &project, name, args)?;
@@ -81,12 +87,50 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Runs `f` with the output of the commands it runs going to a new log in
-/// `./.dev/log` (next to dev.yaml). A failure says where that log is.
-fn with_run_log(ctx: &mut Context, command: &str, f: impl FnOnce(&mut Context) -> Result<()>) -> Result<()> {
+/// Runs `f` (the `command` run, e.g. `up`, for `project`) with progress
+/// going to a [`reporter`] and the output of the commands it runs going to a
+/// new log in `./.dev/log` (next to dev.yaml). A failure says where that log
+/// is.
+fn with_run_log(
+    ctx: &mut Context,
+    command: &str,
+    project: &str,
+    f: impl FnOnce(&mut Context) -> Result<()>,
+) -> Result<()> {
     let log = RunLog::create(Path::new("."), command, run_log::KEEP)?;
     ctx.log = Box::new(log.file);
-    f(ctx).with_note(|| format!("full output is in {}", log.path.display()))
+    ctx.reporter = reporter()?;
+
+    ctx.reporter.start(command, project)?;
+    let res = f(ctx);
+    let finished = ctx.reporter.finish(res.is_ok());
+
+    if let Err(err) = &res
+        && ctx.reporter.error(err, &log.path)?
+    {
+        // It's on screen already, and returning it would print it again.
+        std::process::exit(1);
+    }
+    // The run's own failure is the one worth reporting.
+    res.with_note(|| format!("full output is in {}", log.path.display()))?;
+    finished
+}
+
+/// The clack UI when stderr (where it draws) is a terminal, plain lines on
+/// stdout otherwise. `DEV_UI=plain` forces plain lines.
+fn reporter() -> Result<Box<dyn Reporter>> {
+    let plain = match env::var("DEV_UI") {
+        Ok(ui) if ui == "plain" => true,
+        Ok(ui) => bail!("unknown DEV_UI `{ui}`; the only option is `plain`"),
+        Err(env::VarError::NotPresent) => false,
+        Err(env::VarError::NotUnicode(ui)) => bail!("unknown DEV_UI {ui:?}; the only option is `plain`"),
+    };
+
+    if !plain && io::stderr().is_terminal() {
+        Ok(Box::new(Clack::new()))
+    } else {
+        Ok(Box::new(Plain::new(Box::new(io::stdout()))))
+    }
 }
 
 /// The process env, skipping vars that aren't UTF-8. `PWD` falls back to the

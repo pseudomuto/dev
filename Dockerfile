@@ -16,6 +16,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends bash ca-certificates curl git zsh \
   && rm -rf /var/lib/apt/lists/*
 
+# Without a UTF-8 locale, dev's UI falls back to ASCII (`|` for `│`).
+ENV LANG=C.UTF-8
+
 COPY --from=build /src/target/release/dev /usr/local/bin/dev
 COPY share/shell /usr/local/share/dev/shell
 
