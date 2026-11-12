@@ -12,6 +12,9 @@ use crate::{
     deps::{Dependency, brew::Brew},
 };
 
+/// Resolves `${VAR}` in env values. Same contract as [`std::env::var`].
+pub type Lookup<'a> = dyn Fn(&str) -> std::result::Result<String, env::VarError> + 'a;
+
 /// A project as described by its `dev.yaml`.
 ///
 /// ```yaml
@@ -39,19 +42,32 @@ pub struct Project {
 }
 
 impl Project {
-    /// Reads and parses the `dev.yaml` at `path`.
+    /// Reads and parses the `dev.yaml` at `path`, expanding env values from
+    /// the process environment.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let yaml = fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-        Self::from_yaml(&yaml).wrap_err_with(|| format!("invalid project file {}", path.display()))
+        Self::load_with(path, &|var| env::var(var))
     }
 
-    /// Parses a `dev.yaml` document.
+    /// Like [`Project::load`], but `${VAR}` in env values comes from `lookup`.
+    pub fn load_with(path: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
+        let path = path.as_ref();
+        let yaml = fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+        Self::from_yaml_with(&yaml, lookup).wrap_err_with(|| format!("invalid project file {}", path.display()))
+    }
+
+    /// Parses a `dev.yaml` document, expanding env values from the process
+    /// environment.
     ///
     /// Fails on unknown top-level fields, unsupported dependency keys, names
     /// that aren't lowercase and dashed, and env values that reference unset
     /// variables.
     pub fn from_yaml(yaml: &str) -> Result<Self> {
+        Self::from_yaml_with(yaml, &|var| env::var(var))
+    }
+
+    /// Like [`Project::from_yaml`], but `${VAR}` in env values comes from
+    /// `lookup`.
+    pub fn from_yaml_with(yaml: &str, lookup: &Lookup<'_>) -> Result<Self> {
         let raw: RawProject = serde_saphyr::from_str(yaml)?;
         validate_name(&raw.name)?;
 
@@ -59,7 +75,7 @@ impl Project {
             .env
             .into_iter()
             .map(|(name, value)| {
-                let value = expand(&name, &value)?;
+                let value = expand(&name, &value, lookup)?;
                 Ok((name, value))
             })
             .collect::<Result<_>>()?;
@@ -148,9 +164,9 @@ fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Replaces each `${VAR}` in env entry `name`'s `value` with `VAR` from the
-/// environment. A bare `$VAR` is left as is.
-fn expand(name: &str, value: &str) -> Result<String> {
+/// Replaces each `${VAR}` in env entry `name`'s `value` with `VAR` from
+/// `lookup`. A bare `$VAR` is left as is.
+fn expand(name: &str, value: &str, lookup: &Lookup<'_>) -> Result<String> {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
 
@@ -162,7 +178,7 @@ fn expand(name: &str, value: &str) -> Result<String> {
             .ok_or_else(|| eyre!("env `{name}` has a `${{` with no closing `}}`"))?;
 
         let var = &after[..end];
-        let val = env::var(var).map_err(|e| match e {
+        let val = lookup(var).map_err(|e| match e {
             env::VarError::NotPresent => eyre!("env `{name}` references `${{{var}}}`, which isn't set"),
             env::VarError::NotUnicode(_) => eyre!("env `{name}` references `${{{var}}}`, which isn't valid UTF-8"),
         })?;

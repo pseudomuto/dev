@@ -149,3 +149,48 @@ fn commands_named_down_are_rejected() -> Result<()> {
     );
     Ok(())
 }
+
+/// Runs `dev hook-env` in `$HOME/<rel>`, with `home` as `$HOME` so the real
+/// user's global dev.yaml is never read.
+#[allow(clippy::disallowed_methods)]
+fn hook_env(home: &TempDir, rel: &str) -> Result<Output> {
+    let pwd = home.path().join(rel);
+    Ok(Command::new(env!("CARGO_BIN_EXE_dev"))
+        .arg("hook-env")
+        .current_dir(&pwd)
+        .env("HOME", home.path())
+        .env("PWD", &pwd)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("__DEV_ENV")
+        .output()?)
+}
+
+#[test]
+fn hook_env_prints_nothing_without_dev_yaml() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let output = hook_env(&dir, "")?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(Some(0), output.status.code(), "stderr: {stderr}");
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    Ok(())
+}
+
+#[test]
+fn hook_env_fails_on_invalid_dev_yaml_without_printing_a_script() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    std::fs::create_dir(home.path().join("proj"))?;
+    std::fs::write(home.path().join("proj/dev.yaml"), "name: Not Valid\n")?;
+
+    let output = hook_env(&home, "proj")?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(Some(1), output.status.code(), "stderr: {stderr}");
+    assert!(stderr.contains("must be lowercase words"), "stderr: {stderr}");
+    assert!(output.stdout.is_empty(), "the shell must eval nothing");
+    Ok(())
+}

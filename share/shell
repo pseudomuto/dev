@@ -15,6 +15,8 @@
 # - In bash and zsh, a prompt hook reloads the setup whenever `dev` changed
 #   it, even from another terminal. `dev` writes a new `.stamp` with every
 #   change, and the hook only compares that, so prompts stay fast.
+# - The same hook loads the env of the `dev.yaml` files that apply in `$PWD`
+#   (see `dev hook-env`), and puts back what they changed when you leave.
 # - `dev` becomes a shell function that runs the real `dev` and then the same
 #   check, so `dev up && jq ...` works on one line.
 
@@ -31,11 +33,9 @@ __dev_load() {
   unset __dev_shell
 }
 
-# Reloads the setup if `dev` changed it since this shell last loaded it. Keeps
-# `$?`, so prompts (and `dev`) still report the last command's status.
-#
-# Per-project env will hook in here later, by also checking for `$PWD`
-# changes.
+# Reloads the setup if `dev` changed it since this shell last loaded it, then
+# brings the project env up to date. Keeps `$?`, so prompts (and `dev`) still
+# report the last command's status.
 __dev_hook() {
   set -- "$?"
 
@@ -50,7 +50,11 @@ __dev_hook() {
     __dev_load
   fi
 
-  unset __dev_stamp __dev_stamp_file
+  # Prints nothing when the env is already current. On failure it prints its
+  # error and no script, so the env stays as it was.
+  __dev_env=$(command dev hook-env) && eval "$__dev_env"
+
+  unset __dev_stamp __dev_stamp_file __dev_env
   return "$1"
 }
 

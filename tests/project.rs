@@ -165,3 +165,19 @@ fn from_yaml_fails_on_unclosed_braces_in_env() {
         .expect("an unclosed `${` should fail");
     assert_eq!("env `A` has a `${` with no closing `}`", err.to_string());
 }
+
+#[test]
+fn from_yaml_with_expands_from_the_given_lookup() -> Result<()> {
+    let lookup = |var: &str| match var {
+        "ROOT" => Ok("/proj".to_string()),
+        _ => Err(std::env::VarError::NotPresent),
+    };
+    let project = Project::from_yaml_with("name: demo\nenv:\n  BIN: \"${ROOT}/bin\"\n", &lookup)?;
+    assert_eq!(vec![("BIN".to_string(), "/proj/bin".to_string())], project.env);
+
+    let err = Project::from_yaml_with("name: demo\nenv:\n  A: \"${HOME}\"\n", &lookup)
+        .err()
+        .expect("vars missing from the lookup should fail, even if the process has them");
+    assert_eq!("env `A` references `${HOME}`, which isn't set", err.to_string());
+    Ok(())
+}
