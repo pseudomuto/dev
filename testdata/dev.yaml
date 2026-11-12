@@ -38,3 +38,19 @@ deps:
 commands:
   # `dev hello a b` prints the greeting and its args.
   hello: 'echo "$GREETING, args: $*"'
+
+  # `dev greet --help` shows usage. `dev greet Muto -l` shouts it.
+  greet:
+    desc: Greet someone
+    flags:
+      loud: { short: l, type: bool, desc: Shout it }
+    args:
+      - name: who
+        default: world
+    run: |
+      msg="$GREETING, $WHO"
+      if [ "$LOUD" = true ]; then
+        echo "$msg" | tr '[:lower:]' '[:upper:]'
+      else
+        echo "$msg"
+      fi

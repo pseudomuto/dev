@@ -99,6 +99,17 @@ env:
 commands:
   hello: 'echo "$GREETING from $0, args: $*"'
   fail: exit 3
+  deploy:
+    desc: Deploy an app
+    flags:
+      env: { short: e, default: staging, desc: Target environment }
+      dry-run: { type: bool }
+      tag: {}
+    args:
+      - name: target
+      - name: region
+        required: false
+    run: 'echo "$TARGET|${REGION-unset}|$ENV|$DRY_RUN|${TAG-unset}|$*"'
 "#;
 
 fn project_dir(yaml: &str) -> Result<TempDir> {
@@ -123,6 +134,92 @@ fn runs_project_commands_with_env_and_args() -> Result<()> {
 }
 
 #[test]
+fn declared_flags_and_args_reach_the_command_as_env() -> Result<()> {
+    let dir = project_dir(COMMANDS_YAML)?;
+    let cases: [(&[&str], &str); 2] = [
+        (
+            &["deploy", "web", "-e", "prod", "--dry-run"],
+            "web|unset|prod|true|unset|\n",
+        ),
+        (
+            &["deploy", "web", "eu", "--tag", "v1", "--", "a", "b c"],
+            "web|eu|staging|false|v1|a b c\n",
+        ),
+    ];
+
+    for (args, want) in cases {
+        let output = dev(&dir, args)?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(Some(0), output.status.code(), "args: {args:?}, stderr: {stderr}");
+        assert_eq!(want, String::from_utf8_lossy(&output.stdout), "args: {args:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn declared_commands_get_help_and_usage_errors() -> Result<()> {
+    let dir = project_dir(COMMANDS_YAML)?;
+
+    let help = dev(&dir, &["deploy", "--help"])?;
+    let stdout = String::from_utf8_lossy(&help.stdout);
+    assert_eq!(Some(0), help.status.code(), "stdout: {stdout}");
+    for want in ["Deploy an app", "Usage: dev deploy", "Target environment", "--dry-run"] {
+        assert!(stdout.contains(want), "want `{want}` in help: {stdout}");
+    }
+
+    let missing = dev(&dir, &["deploy"])?;
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert_eq!(Some(2), missing.status.code(), "stderr: {stderr}");
+    assert!(stderr.contains("<TARGET>"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("Location:"),
+        "clap's message, not an eyre report: {stderr}"
+    );
+    assert!(missing.stdout.is_empty(), "nothing should run");
+    Ok(())
+}
+
+#[test]
+fn file_commands_run_the_script_next_to_dev_yaml() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = project_dir(
+        r#"name: demo
+commands:
+  release:
+    file: scripts/release.sh
+    flags:
+      yes: { short: y, type: bool }
+  bare:
+    file: bare.sh
+"#,
+    )?;
+    let scripts = [
+        ("scripts/release.sh", "#!/bin/sh\necho \"file|$YES|$*\"\n"),
+        // No slash, so it must not be looked up on PATH.
+        ("bare.sh", "#!/bin/sh\necho \"bare|$*\"\n"),
+    ];
+    for (path, body) in scripts {
+        let path = dir.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("scripts have a parent"))?;
+        std::fs::write(&path, body)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    let cases: [(&[&str], &str); 2] = [
+        (&["release", "-y", "--", "x"], "file|true|x\n"),
+        (&["bare", "a", "b"], "bare|a b\n"),
+    ];
+    for (args, want) in cases {
+        let output = dev(&dir, args)?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(Some(0), output.status.code(), "args: {args:?}, stderr: {stderr}");
+        assert_eq!(want, String::from_utf8_lossy(&output.stdout), "args: {args:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn project_commands_exit_with_their_own_code() -> Result<()> {
     let dir = project_dir(COMMANDS_YAML)?;
     let output = dev(&dir, &["fail"])?;
@@ -143,10 +240,18 @@ fn unknown_commands_list_the_available_ones() -> Result<()> {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(Some(1), output.status.code(), "stderr: {stderr}");
+    // One per line, which the report indents to line up with the first, and
+    // colors, ending the last one with a reset.
+    let lines: Vec<&str> = stderr.lines().map(|l| l.trim().trim_end_matches("\u{1b}[0m")).collect();
     assert!(
-        stderr.contains("unknown command `nope`; dev.yaml has: fail, hello"),
+        lines
+            .iter()
+            .any(|l| l.ends_with("unknown command `nope`; dev.yaml has:")),
         "stderr: {stderr}"
     );
+    for entry in ["deploy - Deploy an app", "fail", "hello"] {
+        assert!(lines.contains(&entry), "want `{entry}` in stderr: {stderr}");
+    }
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-use dev::{Result, project::Project};
+use dev::{Result, commands::Script, project::Project};
 
 #[test]
 fn from_yaml_parses_name_and_brew_dep() -> Result<()> {
@@ -164,8 +164,9 @@ commands:
         ("GOFLAGS".to_string(), "-mod=mod".to_string()),
     ];
     assert_eq!(env, project.env);
-    assert_eq!(Some("cargo test"), project.commands.get("test").map(String::as_str));
-    assert_eq!(Some("cargo clippy\n"), project.commands.get("lint").map(String::as_str));
+    let script = |name: &str| project.commands.get(name).map(|cmd| &cmd.script);
+    assert_eq!(Some(&Script::Run("cargo test".to_string())), script("test"));
+    assert_eq!(Some(&Script::Run("cargo clippy\n".to_string())), script("lint"));
     Ok(())
 }
 

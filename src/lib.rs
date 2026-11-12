@@ -1,4 +1,4 @@
-mod commands;
+pub mod commands;
 mod context;
 pub mod deps;
 mod down;

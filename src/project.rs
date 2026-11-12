@@ -9,6 +9,7 @@ use serde::{
 
 use crate::{
     Result,
+    commands::ProjectCommand,
     deps::{Dependency, brew::Brew, mise::Mise},
 };
 
@@ -23,6 +24,11 @@ pub type Lookup<'a> = dyn Fn(&str) -> std::result::Result<String, env::VarError>
 ///   PATH: "${PWD}/bin:${PATH}"
 /// commands:
 ///   test: cargo test
+///   deploy:
+///     desc: Deploy an app
+///     flags:
+///       dry-run: { type: bool }
+///     run: echo "dry run: $DRY_RUN"
 /// deps:
 ///   brew:
 ///     - jq
@@ -37,8 +43,8 @@ pub struct Project {
     /// `${NAME}` in a value is replaced with `NAME` from the environment `dev`
     /// started in.
     pub env: Vec<(String, String)>,
-    /// Shell snippets run by `dev <name>`, by name.
-    pub commands: BTreeMap<String, String>,
+    /// Run by `dev <name>`, by name.
+    pub commands: BTreeMap<String, ProjectCommand>,
     /// In the order they appear under `deps`. Keys other than built-in
     /// dependencies (e.g. `brew`) are tools, all installed by one mise
     /// dependency where the first one appears.
@@ -100,7 +106,7 @@ struct RawProject {
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
-    commands: BTreeMap<String, String>,
+    commands: BTreeMap<String, ProjectCommand>,
     #[serde(default)]
     deps: Deps,
 }
