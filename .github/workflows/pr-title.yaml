@@ -2,7 +2,7 @@ name: PR title
 
 # PR titles become the commit subjects on main (squash merges) and the lines
 # in release notes, so they must be Conventional Commits. This checks the
-# title and labels the PR by its type, which .github/release.yml groups.
+# title and labels the PR by its type, which .github/release.yaml groups.
 #
 # pull_request_target so it can label PRs from forks too. It never checks
 # out or runs PR code, and the title only reaches the script through env.
