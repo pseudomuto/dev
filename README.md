@@ -296,6 +296,8 @@ missing. A few things to know:
 
 - **Pin versions in `dev.yaml`.** With `latest` or `lts`, a new upstream release is downloaded on every run until
   `dev.yaml` changes, since the cache can't tell it's new.
+- **Brew packages are cached on their own and only reused on an exact key match.** dev never uninstalls brew packages,
+  so this keeps one you removed from `dev.yaml` from lingering in CI. The cost: any change to the key reinstalls them.
 - **Old Rust toolchains stay in the cache** after you move to a new one. If it gets big, change `cache-key-files` (or
   anything else in the key) to start a fresh one. Unused mise tool versions are dropped automatically.
 
