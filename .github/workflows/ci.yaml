@@ -33,14 +33,31 @@ jobs:
       - name: Put this build of dev on PATH
         run: echo "$PWD/target/debug" >> "$GITHUB_PATH"
 
-      # Rust toolchains (incl. nightly rustfmt), then actionlint, cargo-shear,
-      # and shellcheck through mise.
+      # This repo's own action, with the dev just built: Rust toolchains (incl.
+      # nightly rustfmt), then actionlint, cargo-shear, and shellcheck through
+      # mise, cached.
       - name: Install dependencies
-        run: dev up
+        id: dev
+        uses: ./
+        with:
+          version: installed
 
-      # The shell setup isn't loaded in CI, so use mise's shims for its tools.
-      - name: Put dev's tools on PATH
-        run: echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+      # Checks what the action promises: the tools are on PATH, mise's shims
+      # come first (GitHub prepends $GITHUB_PATH lines in order), and dev
+      # won't update itself.
+      - name: Check the action's setup
+        env:
+          CACHE_HIT: ${{ steps.dev.outputs.cache-hit }}
+          VERSION: ${{ steps.dev.outputs.version }}
+        run: |
+          set -eu
+          echo "dev $VERSION, cache hit: $CACHE_HIT"
+          command -v dev actionlint cargo-shear shellcheck
+          case "$(command -v shellcheck)" in
+            "$HOME"/.local/share/mise/shims/*) ;;
+            *) echo "::error::shellcheck isn't from mise's shims: $(command -v shellcheck)"; exit 1 ;;
+          esac
+          test "$DEV_AUTO_UPDATE" = 0
 
       - name: Run CI checks
         run: dev test:ci
