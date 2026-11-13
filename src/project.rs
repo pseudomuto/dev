@@ -198,7 +198,8 @@ fn validate_name(name: &str) -> Result<()> {
 }
 
 /// Replaces each `${VAR}` in env entry `name`'s `value` with `VAR` from
-/// `lookup`. A bare `$VAR` is left as is.
+/// `lookup`, and each `${VAR:-default}` with `VAR` if it's set and not empty,
+/// or `default` otherwise. A bare `$VAR` is left as is.
 fn expand(name: &str, value: &str, lookup: &Lookup<'_>) -> Result<String> {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -210,11 +211,25 @@ fn expand(name: &str, value: &str, lookup: &Lookup<'_>) -> Result<String> {
             .find('}')
             .ok_or_else(|| eyre!("env `{name}` has a `${{` with no closing `}}`"))?;
 
-        let var = &after[..end];
-        let val = lookup(var).map_err(|e| match e {
-            env::VarError::NotPresent => eyre!("env `{name}` references `${{{var}}}`, which isn't set"),
-            env::VarError::NotUnicode(_) => eyre!("env `{name}` references `${{{var}}}`, which isn't valid UTF-8"),
-        })?;
+        let expr = &after[..end];
+        let val = match expr.split_once(":-") {
+            Some((var, default)) => {
+                if default.contains("${") {
+                    bail!("env `{name}` has a `${{` inside the default for `${{{var}}}`, which isn't supported");
+                }
+                match lookup(var) {
+                    Ok(val) if !val.is_empty() => val,
+                    Ok(_) | Err(env::VarError::NotPresent) => default.to_string(),
+                    Err(env::VarError::NotUnicode(_)) => {
+                        bail!("env `{name}` references `${{{var}}}`, which isn't valid UTF-8")
+                    }
+                }
+            }
+            None => lookup(expr).map_err(|e| match e {
+                env::VarError::NotPresent => eyre!("env `{name}` references `${{{expr}}}`, which isn't set"),
+                env::VarError::NotUnicode(_) => eyre!("env `{name}` references `${{{expr}}}`, which isn't valid UTF-8"),
+            })?,
+        };
         out.push_str(&val);
         rest = &after[end + 1..];
     }

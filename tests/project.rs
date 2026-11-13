@@ -222,6 +222,53 @@ fn from_yaml_with_expands_from_the_given_lookup() -> Result<()> {
     Ok(())
 }
 
+/// Expands `value` as env var `A`, with only `vars` set.
+fn expand_with(value: &str, vars: &[(&str, &str)]) -> Result<String> {
+    let lookup = |var: &str| {
+        vars.iter()
+            .find(|(name, _)| *name == var)
+            .map(|(_, val)| val.to_string())
+            .ok_or(std::env::VarError::NotPresent)
+    };
+    let mut project = Project::from_yaml_with(&format!("name: demo\nenv:\n  A: {value:?}\n"), &lookup)?;
+    Ok(project.env.remove(0).1)
+}
+
+#[test]
+fn from_yaml_uses_the_default_when_the_var_is_unset() -> Result<()> {
+    assert_eq!(
+        "postgres://localhost/app",
+        expand_with("${DB:-postgres://localhost/app}", &[])?
+    );
+    Ok(())
+}
+
+#[test]
+fn from_yaml_uses_the_var_over_the_default_when_set() -> Result<()> {
+    let vars = [("DB", "postgres://ci/app")];
+    assert_eq!(
+        "postgres://ci/app?x=1",
+        expand_with("${DB:-postgres://localhost/app}?x=1", &vars)?
+    );
+    Ok(())
+}
+
+#[test]
+fn from_yaml_uses_the_default_when_the_var_is_empty() -> Result<()> {
+    assert_eq!("false", expand_with("${CI:-false}", &[("CI", "")])?);
+    assert_eq!("", expand_with("${CI:-}", &[])?);
+    Ok(())
+}
+
+#[test]
+fn from_yaml_fails_on_vars_inside_a_default() {
+    let err = expand_with("${A:-${B}}", &[("B", "b")]).expect_err("a `${` inside a default should fail");
+    assert_eq!(
+        "env `A` has a `${` inside the default for `${A}`, which isn't supported",
+        err.to_string()
+    );
+}
+
 #[test]
 fn from_yaml_parses_rust_toolchains_as_their_own_dependency() -> Result<()> {
     let project = Project::from_yaml(
