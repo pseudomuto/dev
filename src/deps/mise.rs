@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::{
     deps::{Dependency, Example, Task},
     process,
-    shell::{ShellDir, config_home, home},
+    shell::{ShellDir, config_home, data_home, home},
 };
 
 const INSTALL_URL: &str = "https://mise.run";
@@ -29,6 +29,7 @@ const SHELL_FILE: &str = "mise";
 /// both pin the same tool.
 pub struct Mise {
     tasks: Vec<Box<dyn Task>>,
+    data_dir: Option<PathBuf>,
 }
 
 impl Mise {
@@ -49,7 +50,37 @@ impl Mise {
     /// Like [`Mise::new`], but with an explicit list of tasks to run, in
     /// order.
     pub fn with_tasks(tasks: Vec<Box<dyn Task>>) -> Self {
-        Self { tasks }
+        Self { tasks, data_dir: None }
+    }
+
+    /// Uses `dir` as mise's data dir (`$MISE_DATA_DIR`) when putting its
+    /// shims on `PATH`.
+    pub fn with_data_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = Some(dir.into());
+        self
+    }
+
+    /// Puts mise's shims on `PATH` for every command run after this, so
+    /// later dependencies in the same `dev up` (e.g. installing node
+    /// packages) find the tools, even when the shell running dev hasn't
+    /// activated mise yet.
+    ///
+    /// Done when checking as well as meeting, like
+    /// [`Rust`](super::rust::Rust) does with cargo.
+    fn use_shims(&self, ctx: &mut crate::Context) -> crate::Result<()> {
+        let data_dir = match &self.data_dir {
+            Some(dir) => dir.clone(),
+            None => default_data_dir()?,
+        };
+        super::prepend_path(ctx, &data_dir.join("shims"))
+    }
+}
+
+/// `$MISE_DATA_DIR`, or `mise` in the XDG data dir, as mise itself has it.
+fn default_data_dir() -> crate::Result<PathBuf> {
+    match env::var_os("MISE_DATA_DIR").filter(|d| !d.is_empty()) {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => Ok(data_home()?.join("mise")),
     }
 }
 
@@ -78,10 +109,12 @@ impl Dependency for Mise {
     }
 
     fn meet(&self, ctx: &mut crate::Context) -> crate::Result<()> {
+        self.use_shims(ctx)?;
         super::meet_tasks(&self.tasks, ctx)
     }
 
     fn is_met(&self, ctx: &mut crate::Context) -> crate::Result<bool> {
+        self.use_shims(ctx)?;
         super::tasks_met(&self.tasks, ctx)
     }
 
