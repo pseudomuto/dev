@@ -104,6 +104,25 @@ fn entering_a_project_exports_its_env_and_leaving_restores_it() -> Result<()> {
 }
 
 #[test]
+fn a_default_gives_way_to_the_shells_own_value() -> Result<()> {
+    let mut sh = Shell::new()?;
+    sh.env.insert("DB".to_string(), "mine".to_string());
+    sh.project(
+        "proj",
+        "name: proj\nenv:\n  DB: \"${DB:-local}\"\n  CI: \"${CI:-false}\"\n",
+    )?;
+
+    sh.cd(&sh.path("proj"))?;
+    assert_eq!(Some("mine"), sh.get("DB"));
+    assert_eq!(Some("false"), sh.get("CI"));
+
+    sh.cd(&sh.path("elsewhere"))?;
+    assert_eq!(Some("mine"), sh.get("DB"));
+    assert_eq!(None, sh.get("CI"));
+    Ok(())
+}
+
+#[test]
 fn nested_projects_layer_outermost_first_and_back_out_cleanly() -> Result<()> {
     let mut sh = Shell::new()?;
     sh.project(
