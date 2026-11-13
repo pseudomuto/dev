@@ -12,9 +12,10 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: Which part of the version to bump
+        description: Which part of the version to bump. auto picks it from the commits since the last release.
         type: choice
-        options: [patch, minor, major]
+        options: [auto, patch, minor, major]
+        default: auto
         required: true
 
 permissions:
@@ -33,14 +34,47 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history and tags, so auto can read the commits since the last
+          # release.
+          fetch-depth: 0
 
       # Rust comes from rust-toolchain.toml, which rustup reads on first use.
+      #
+      # auto relies on squash merges: every commit on main is a PR title, which
+      # pr-title.yaml checks is a Conventional Commit. A "!" means major, feat
+      # means minor, fix or perf means patch. Anything else (docs, chore, ci,
+      # ...) isn't worth a release on its own, so auto refuses and you can pick
+      # a bump by hand if you really want one.
       - name: Compute next version
         id: version
         env:
           BUMP: ${{ inputs.bump }}
         run: |
           current=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+
+          if [ "$BUMP" = auto ]; then
+            if ! git rev-parse --verify --quiet "refs/tags/v$current" > /dev/null; then
+              echo "::error::no tag v$current for the version in Cargo.toml; pick a bump by hand"
+              exit 1
+            fi
+
+            subjects=$(git log "v$current..HEAD" --format=%s)
+            echo "commits since v$current:"
+            echo "$subjects"
+
+            if grep -qE '^[a-z]+(\([^)]*\))?!: ' <<< "$subjects"; then
+              BUMP="major"
+            elif grep -qE '^feat(\([^)]*\))?: ' <<< "$subjects"; then
+              BUMP="minor"
+            elif grep -qE '^(fix|perf)(\([^)]*\))?: ' <<< "$subjects"; then
+              BUMP="patch"
+            else
+              echo "::error::no feat, fix, perf, or breaking commits since v$current; nothing to release"
+              exit 1
+            fi
+          fi
+
           IFS=. read -r major minor patch <<< "$current"
           case "$BUMP" in
             major) next="$((major + 1)).0.0" ;;
