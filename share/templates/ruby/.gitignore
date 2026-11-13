@@ -1,0 +1,9 @@
+/.bundle/
+/vendor/bundle/
+/coverage/
+/pkg/
+/tmp/
+
+# env file
+.env
+.envrc

@@ -1,0 +1,36 @@
+name: {{name}}
+
+deps:
+  node: "26"
+  actionlint: "1.7"
+
+commands:
+  build:
+    desc: Compile TypeScript into dist/
+    run: npx --no -- tsc "$@"
+
+  run:
+    desc: Run the project
+    run: node src/main.ts "$@"
+
+  test:
+    desc: Run the tests
+    run: node --test "$@"
+
+  fmt:
+    desc: Format the code
+    run: |
+      npx --no -- eslint --fix .
+      npx --no -- prettier --write .
+
+  lint:
+    desc: Type check and lint the code
+    run: |
+      set -e
+      npx --no -- tsc --noEmit
+      npx --no -- eslint .
+      npx --no -- prettier --check .
+
+  lint:actions:
+    desc: Lint the GitHub Actions workflows
+    run: actionlint "$@"

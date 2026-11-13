@@ -1,0 +1,26 @@
+name: {{name}}
+
+deps:
+  ruby: "4.0"
+  actionlint: "1.7"
+
+commands:
+  run:
+    desc: Run the project
+    run: ruby main.rb "$@"
+
+  test:
+    desc: Run the tests
+    run: bundle exec rake test "$@"
+
+  fmt:
+    desc: Format the code
+    run: bundle exec rubocop --autocorrect "$@"
+
+  lint:
+    desc: Lint the code
+    run: bundle exec rubocop "$@"
+
+  lint:actions:
+    desc: Lint the GitHub Actions workflows
+    run: actionlint "$@"

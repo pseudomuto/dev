@@ -65,7 +65,7 @@ commands:
 
   lint:actions:
     desc: Lint the GitHub Actions workflows
-    run: actionlint
+    run: actionlint && actionlint share/templates/*/.github/workflows/*.yaml
 
   lint:shell:
     desc: Lint the shell scripts

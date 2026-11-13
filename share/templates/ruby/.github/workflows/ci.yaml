@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No gem cache: bundler installs gems into the Ruby that mise installed,
+      # which the dev action already caches.
+      - uses: pseudomuto/dev@{{dev_version}}
+
+      - run: dev lint && dev lint:actions
+      - run: dev test

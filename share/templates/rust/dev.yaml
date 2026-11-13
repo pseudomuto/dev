@@ -1,0 +1,31 @@
+name: {{name}}
+
+deps:
+  rust:
+    - rust-toolchain.toml
+  actionlint: "1.7"
+
+commands:
+  build:
+    desc: Build the project
+    run: cargo build "$@"
+
+  run:
+    desc: Run the project
+    run: cargo run "$@"
+
+  test:
+    desc: Run the tests
+    run: cargo test "$@"
+
+  fmt:
+    desc: Format the code
+    run: cargo fmt --all
+
+  lint:
+    desc: Run clippy
+    run: cargo clippy --all-targets -- -D warnings
+
+  lint:actions:
+    desc: Lint the GitHub Actions workflows
+    run: actionlint "$@"
