@@ -122,7 +122,7 @@ version_from() {
 # one OS release from being restored onto another, where they may not run. Runs in the workspace. The hash covers dev.yaml,
 # rust-toolchain.toml if there is one, and the tracked files matching each
 # line of INPUT_CACHE_KEY_FILES. Language manifests are left out on purpose:
-# they don't change what `dev up` installs.
+# `dev up` installs project packages, but they aren't in this cache.
 cache_key() {
   [ -f dev.yaml ] || die "no dev.yaml at $(pwd); the action runs \`dev up\` from the root of the checkout"
 

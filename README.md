@@ -7,8 +7,8 @@
 
 ![dev up installing a brew package and a mise tool, env loading on cd, and a project command with flags](demo/demo.gif)
 
-`dev` sets up a project's development environment from a `dev.yaml` at its root. Describe the tools, packages, env
-vars, and commands the project needs, and anyone can get going with:
+`dev` sets up a project's development environment from a `dev.yaml` at its root. Describe the tools, packages, env vars,
+and commands the project needs, and anyone can get going with:
 
 ```sh
 dev up
@@ -38,8 +38,7 @@ eval "$(dev shell-init)"
 ```
 
 The shell setup is what makes tools available right after `dev up`, and loads project env as you move between
-directories. `dev` works without it, but you'd have to open a new shell after each `dev up`. bash and zsh are
-supported.
+directories. `dev` works without it, but you'd have to open a new shell after each `dev up`. bash and zsh are supported.
 
 To pick the version or where it goes, set these for `sh`:
 
@@ -84,12 +83,12 @@ dev test    # runs `cargo test` with the project env
 
 ## dev.yaml
 
-| Key        | Required | What it is                                                     |
-| ---------- | -------- | -------------------------------------------------------------- |
-| `name`     | yes      | Lowercase words separated by dashes, e.g. `my-app`.            |
-| `env`      | no       | Env vars set for the project's shell and every command.        |
-| `deps`     | no       | What `dev up` installs, in order.                              |
-| `commands` | no       | Commands run with `dev <name>`.                                |
+| Key        | Required | What it is                                              |
+| ---------- | -------- | ------------------------------------------------------- |
+| `name`     | yes      | Lowercase words separated by dashes, e.g. `my-app`.     |
+| `env`      | no       | Env vars set for the project's shell and every command. |
+| `deps`     | no       | What `dev up` installs, in order.                       |
+| `commands` | no       | Commands run with `dev <name>`.                         |
 
 Unknown keys are an error, so typos don't go unnoticed.
 
@@ -140,28 +139,30 @@ deps:
 
   A channel like `nightly` is installed once, not updated on every `dev up`. Everything after `rust` in the same
   `dev up` finds `cargo`, e.g. a mise `cargo:` tool.
+
 - Every other key is a [mise](https://mise.jdx.dev) tool and its version. dev installs mise if it isn't already on
   `PATH`, and adds the tools to its own mise config (`~/.config/dev/mise.toml`), which mise loads alongside yours. Your
   own global mise config is never changed, and wins when both pin the same tool.
-- `packages` controls installing the project's own packages. You usually don't need it: after everything else, dev
-  finds these in the project root and installs them when they're out of date:
+- `packages` controls installing the project's own packages. You usually don't need it: after everything else, dev finds
+  these in the project root and installs them when they're out of date:
 
-  | Found                                                 | Runs                                       |
-  | ----------------------------------------------------- | ------------------------------------------ |
-  | `package.json`                                        | `npm`, `yarn`, `pnpm`, or `bun install`, by lockfile |
-  | `Gemfile`                                             | `bundle install`                           |
-  | `go.mod`                                              | `go mod download`                          |
-  | `Cargo.toml`                                          | `cargo fetch`                              |
-  | `uv.lock` / `poetry.lock`                             | `uv sync` / `poetry install`               |
+  | Found                     | Runs                                                 |
+  | ------------------------- | ---------------------------------------------------- |
+  | `package.json`            | `npm`, `yarn`, `pnpm`, or `bun install`, by lockfile |
+  | `Gemfile`                 | `bundle install`                                     |
+  | `go.mod`                  | `go mod download`                                    |
+  | `Cargo.toml`              | `cargo fetch`                                        |
+  | `uv.lock` / `poetry.lock` | `uv sync` / `poetry install`                         |
 
-  "Out of date" means the manifest, lockfile, or runtime version (e.g. `node --version`) changed since the last
-  install, or `node_modules` / `.venv` is gone. The runtime has to be on `PATH`, e.g. `node: lts` under `deps`.
-  `packages: false` turns this off; `packages: [node, ruby]` installs only those, at that spot in `deps`.
+  "Out of date" means the manifest, lockfile, or runtime version (e.g. `node --version`) changed since the last install,
+  or `node_modules` / `.venv` is gone. The runtime has to be on `PATH`, e.g. `node: lts` under `deps`. `packages: false`
+  turns this off; `packages: [node, ruby]` installs only those, at that spot in `deps`.
 
   When `CI` is set (as CI services do), installs use the lockfile as is and fail if it's out of date: `npm ci`,
-  `--frozen-lockfile` for yarn, pnpm, and bun, `BUNDLE_FROZEN=true`, `cargo fetch --locked`, and `uv sync --locked`.
-  An install that changes the manifest or lockfile anyway (e.g. `go mod download` filling in `go.sum`) fails, since
-  it means they weren't committed up to date.
+  `--frozen-lockfile` for yarn, pnpm, and bun, `BUNDLE_FROZEN=true`, `cargo fetch --locked`, and `uv sync --locked`. An
+  install that changes the manifest or lockfile anyway (e.g. `go mod download` filling in `go.sum`) fails, since it
+  means they weren't committed up to date.
+
 - `custom` is reserved for a future built-in dependency.
 
 ### commands
@@ -208,8 +209,8 @@ dev release -y -- --notes CHANGELOG.md
 
 How the long form works:
 
-- **`run` or `file`**, exactly one. A `file` path is relative to `dev.yaml` and must be executable. It runs directly,
-  so its shebang picks the interpreter (bash, python, ...).
+- **`run` or `file`**, exactly one. A `file` path is relative to `dev.yaml` and must be executable. It runs directly, so
+  its shebang picks the interpreter (bash, python, ...).
 - **Flags and args become env vars**, uppercased with dashes turned into underscores: `--dry-run` is `$DRY_RUN`. This
   works the same for `run` and `file`.
 - **Flag `type`** is `string` (the default) or `bool`. Bool flags are always `true` or `false`. A string flag with no
@@ -223,17 +224,18 @@ How the long form works:
 
 A long-form command without `flags` or `args` passes its args through as is, like the short form.
 
-Command names can't match a built-in command (`up`, `down`, `self-update`, `shell-init`, `hook-env`, `help`). Commands always exit with their own status.
+Command names can't match a built-in command (`up`, `down`, `self-update`, `shell-init`, `hook-env`, `help`). Commands
+always exit with their own status.
 
 ## Commands
 
-| Command            | What it does                                                              |
-| ------------------ | ------------------------------------------------------------------------- |
-| `dev up`           | Installs or updates every dependency in `./dev.yaml` that isn't current.  |
-| `dev down`         | Takes down every dependency, last one first.                              |
+| Command            | What it does                                                             |
+| ------------------ | ------------------------------------------------------------------------ |
+| `dev up`           | Installs or updates every dependency in `./dev.yaml` that isn't current. |
+| `dev down`         | Takes down every dependency, last one first.                             |
 | `dev self-update`  | Installs the latest release, if it's newer.                              |
-| `dev shell-init`   | Prints the shell setup, for `eval "$(dev shell-init)"` in your rc file.   |
-| `dev <name> [...]` | Runs a command from the `commands` section.                               |
+| `dev shell-init`   | Prints the shell setup, for `eval "$(dev shell-init)"` in your rc file.  |
+| `dev <name> [...]` | Runs a command from the `commands` section.                              |
 
 `dev --help` lists the project's commands under the built-in ones, with their `desc`.
 
@@ -268,8 +270,7 @@ installer.
 
 - Set `DEV_AUTO_UPDATE=0` to turn it off, e.g. in your rc file.
 - Builds from source (debug builds, and `cargo install` into `~/.cargo/bin`) don't update themselves.
-- The last background run's output is in `~/.local/state/dev/update.log` (or `$XDG_STATE_HOME/dev`), for when one
-  fails.
+- The last background run's output is in `~/.local/state/dev/update.log` (or `$XDG_STATE_HOME/dev`), for when one fails.
 
 ## GitHub Actions
 
@@ -282,21 +283,23 @@ steps:
   - run: dev test
 ```
 
-It installs dev, runs `dev up` from the root of the checkout, and puts the tools it installed on `PATH`, so plain
-`run:` steps like `cargo test` or `jq` work too. Pin it to a commit SHA, as above, or to a release tag: either way it
-installs the matching dev release. Dependabot and Renovate can keep the pin up to date. On Linux and macOS only.
+It installs dev, runs `dev up` from the root of the checkout, and puts the tools it installed on `PATH`, so plain `run:`
+steps like `cargo test` or `jq` work too. `dev up` also installs your project's packages, from the lockfile as is (see
+[deps](#deps)), so you can drop your own `npm ci` or `bundle install` step. Pin it to a commit SHA, as above, or to a
+release tag: either way it installs the matching dev release. Dependabot and Renovate can keep the pin up to date. On
+Linux and macOS only.
 
-| Input             | Default | What it does                                                                         |
-| ----------------- | ------- | ------------------------------------------------------------------------------------ |
-| `version`         |         | dev version to install, e.g. `0.2.0`. Needed when the action is used at a branch.     |
-| `cache`           | `true`  | Set to `false` to skip the cache.                                                    |
-| `cache-key-files` |         | Extra files whose changes should refresh the cache, one glob per line.               |
-| `export-env`      | `false` | Also export `dev.yaml`'s `env` to later steps (see below).                            |
+| Input             | Default | What it does                                                                      |
+| ----------------- | ------- | --------------------------------------------------------------------------------- |
+| `version`         |         | dev version to install, e.g. `0.2.0`. Needed when the action is used at a branch. |
+| `cache`           | `true`  | Set to `false` to skip the cache.                                                 |
+| `cache-key-files` |         | Extra files whose changes should refresh the cache, one glob per line.            |
+| `export-env`      | `false` | Also export `dev.yaml`'s `env` to later steps (see below).                        |
 
-| Output      | What it is                                    |
-| ----------- | --------------------------------------------- |
-| `version`   | The dev version installed.                    |
-| `cache-hit` | `true` when the cache key matched exactly.    |
+| Output      | What it is                                 |
+| ----------- | ------------------------------------------ |
+| `version`   | The dev version installed.                 |
+| `cache-hit` | `true` when the cache key matched exactly. |
 
 ### Caching
 
@@ -304,15 +307,23 @@ The action caches what `dev up` installs: Rust toolchains, mise tools, and brew 
 `dev.yaml`, `rust-toolchain.toml`, or a `cache-key-files` match changes; otherwise `dev up` only installs what's
 missing. A few things to know:
 
-- **It doesn't cache your project's dependencies or build output** (`~/.cargo/registry`, `target/`, `node_modules`).
-  Keep using your language's cache action for those, after this one:
+- **It doesn't cache your project's packages or build output** (`~/.npm`, `~/.cargo/registry`, `target/`). Keep using
+  your language's cache action for those, before this one, so `dev up` installs packages from a warm cache:
 
   ```yaml
-  - uses: pseudomuto/dev@<sha> # v0.2.0
+  - uses: actions/checkout@<sha> # v7.0.1
+  - uses: actions/cache@<sha> # v6.1.0
+    with:
+      path: ~/.npm
+      key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
   - uses: Swatinem/rust-cache@<sha> # v2.9.3
+  - uses: pseudomuto/dev@<sha> # v0.2.0
   - run: dev test
   ```
 
+- **Ruby gems end up in this cache.** `bundle install` puts them inside the Ruby that mise installed, which is cached
+  with the tools. That only speeds things up (bundler still installs what `Gemfile.lock` says), but old gems stay until
+  the key changes.
 - **Pin versions in `dev.yaml`.** With `latest` or `lts`, a new upstream release is downloaded on every run until
   `dev.yaml` changes, since the cache can't tell it's new.
 - **Brew packages are cached on their own and only reused on an exact key match.** dev never uninstalls brew packages,
