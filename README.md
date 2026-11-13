@@ -16,12 +16,23 @@ dev up
 
 It's idempotent: `dev up` only does what isn't done yet, so it's safe to run any time, e.g. after pulling.
 
-What it handles:
+## Features at a glance
 
-- **Packages** from Homebrew formulae, installed with [zerobrew](https://zerobrew.rs).
-- **Tools** like node, python, or go, installed with [mise](https://mise.jdx.dev).
-- **Env vars**, loaded into your shell when you `cd` into the project and removed when you leave.
-- **Project commands**, run with `dev <name>`, with optional flags, args, and generated `--help`.
+- **Packages** from Homebrew formulae, installed with [zerobrew](https://zerobrew.rs). See [deps](#deps).
+- **Tools** like node, python, or go, installed with [mise](https://mise.jdx.dev), without touching your own mise
+  config.
+- **Rust toolchains** with rustup, straight from `rust-toolchain.toml` or listed by channel.
+- **Project packages** (npm, yarn, pnpm, bun, bundler, go, cargo, uv, poetry) installed when they're out of date, and
+  strictly from the lockfile in CI.
+- **Env vars**, loaded into your shell when you `cd` into the project and removed when you leave, layered from a global
+  `dev.yaml` down. See [env](#env) and [How env is loaded](#how-env-is-loaded).
+- **Project commands**, run with `dev <name>`, with optional flags, args, and generated `--help`. See
+  [commands](#commands).
+- **New projects** from built-in templates (Go, Node, Python, Ruby, Rust) or your own, with `dev new`. See
+  [New projects](#new-projects).
+- **Logs** of every `dev up` and `dev down` in `.dev/log`, so the terminal only shows progress. See [Logs](#logs).
+- **Self-updates** in the background, checked against release checksums. See [Updates](#updates).
+- **A GitHub action** that runs `dev up` in CI and caches what it installs. See [GitHub Actions](#github-actions).
 
 ## Install
 
