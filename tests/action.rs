@@ -18,6 +18,8 @@ struct Run {
     stderr: String,
     /// `$GITHUB_OUTPUT`'s contents.
     output: String,
+    /// `$GITHUB_PATH`'s contents.
+    path: String,
 }
 
 /// Runs `dev-action.sh <sub>` with `$HOME` at `dir/home`, cwd and
@@ -52,6 +54,7 @@ fn run(sub: &str, dir: &TempDir, vars: &[(&str, &str)]) -> Result<Run> {
         status: out.status,
         stderr: String::from_utf8(out.stderr)?,
         output: fs::read_to_string(&files[0])?,
+        path: fs::read_to_string(&files[1])?,
     })
 }
 
@@ -320,5 +323,77 @@ fn cache_key_fails_without_a_dev_yaml() -> Result<()> {
     // The script prints the real path; on macOS the temp dir is behind a
     // symlink (/var -> /private/var).
     assert_failed(&r, &format!("no dev.yaml at {}", fs::canonicalize(&work)?.display()));
+    Ok(())
+}
+
+/// Writes `contents` to `dir/home/<rel>`, making its dirs.
+fn home_file(dir: &TempDir, rel: &str, contents: &str) -> Result<()> {
+    let file = dir.path().join("home").join(rel);
+    fs::create_dir_all(file.parent().expect("files are in a dir"))?;
+    fs::write(file, contents)?;
+    Ok(())
+}
+
+#[test]
+fn path_puts_dev_tools_first_in_shell_init_order() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    home_file(
+        &dir,
+        ".local/share/dev/shell/rustup",
+        "export PATH=\"$HOME/.cargo/bin:$PATH\"\n",
+    )?;
+    home_file(
+        &dir,
+        ".local/share/dev/shell/zerobrew",
+        "export PATH=\"$HOME/zb/bin:$HOME/zb/sbin:$PATH\"\n",
+    )?;
+    // Never sourced: mise's setup only works from a prompt hook.
+    home_file(&dir, ".local/share/dev/shell/mise", "exit 1\n")?;
+    fs::create_dir_all(dir.path().join("home/.local/share/mise/shims"))?;
+
+    let r = run("path", &dir, &[])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    let home = dir.path().join("home");
+    let home = home.display();
+    // GitHub puts the last line first, so this is lowest priority first.
+    let want = [
+        format!("{home}/.local/bin"),
+        format!("{home}/zb/sbin"),
+        format!("{home}/zb/bin"),
+        format!("{home}/.cargo/bin"),
+        format!("{home}/.local/share/mise/shims"),
+    ];
+    assert_eq!(want.join("\n") + "\n", r.path);
+    Ok(())
+}
+
+#[test]
+fn path_skips_tools_that_arent_set_up() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let r = run("path", &dir, &[])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    assert_eq!(format!("{}/.local/bin\n", dir.path().join("home").display()), r.path);
+    Ok(())
+}
+
+#[test]
+fn path_follows_xdg_data_home() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    home_file(
+        &dir,
+        "data/dev/shell/rustup",
+        "export PATH=\"$HOME/.cargo/bin:$PATH\"\n",
+    )?;
+    fs::create_dir_all(dir.path().join("home/data/mise/shims"))?;
+    let data = dir.path().join("home/data");
+
+    let r = run("path", &dir, &[("XDG_DATA_HOME", data.to_str().unwrap())])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    let home = dir.path().join("home");
+    let home = home.display();
+    assert_eq!(
+        format!("{home}/.local/bin\n{home}/.cargo/bin\n{home}/data/mise/shims\n"),
+        r.path
+    );
     Ok(())
 }

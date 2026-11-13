@@ -6,6 +6,7 @@
 #
 #   resolve-version   Works out which dev to install.
 #   cache-key         Builds the cache key from what `dev up` reads.
+#   path              Puts the tools `dev up` installed on PATH.
 #
 # Settings come in as env vars, and results go to the files GitHub gives each
 # step ($GITHUB_OUTPUT, $GITHUB_PATH, $GITHUB_ENV). Every failure says what to
@@ -18,6 +19,7 @@ main() {
   case "${1:-}" in
     resolve-version) resolve_version ;;
     cache-key) cache_key ;;
+    path) path ;;
     *) die "unknown subcommand '${1:-}'; expected resolve-version, cache-key, path, or export-env" 2 ;;
   esac
 }
@@ -159,6 +161,54 @@ sha256() {
   else
     die "\`sha256sum\` or \`shasum\` is required to build the cache key"
   fi
+}
+
+# Adds the dirs `dev up` set up to $GITHUB_PATH, in the order `dev
+# shell-init` would put them on PATH: mise's shims, then rustup's and
+# zerobrew's dirs, then ~/.local/bin (dev itself).
+#
+# rustup's and zerobrew's are read from the setup dev wrote for each, so they
+# can't drift from what a shell gets. mise's setup is `mise activate`, which
+# only changes PATH from a prompt hook, so its shims dir is used instead.
+path() {
+  shell_dir="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell"
+  shims="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims"
+
+  # Highest priority first, one per line, duplicates dropped.
+  dirs=$(
+    {
+      if [ -d "$shims" ]; then
+        echo "$shims"
+      fi
+      added_by "$shell_dir/rustup"
+      added_by "$shell_dir/zerobrew"
+      echo "$HOME/.local/bin"
+    } | awk '!seen[$0]++'
+  )
+
+  # GitHub puts each line in front of the ones before it, so write them
+  # lowest priority first.
+  printf '%s\n' "$dirs" | awk '{ lines[NR] = $0 } END { for (i = NR; i > 0; i--) print lines[i] }' >>"$GITHUB_PATH"
+}
+
+# Prints the dirs that sourcing the shell setup in $1 puts on PATH, highest
+# priority first, one per line. Nothing if $1 doesn't exist.
+added_by() {
+  [ -f "$1" ] || return 0
+  base=/usr/bin:/bin
+  new=$(
+    set +eu
+    PATH=$base
+    # shellcheck source=/dev/null
+    . "$1" >/dev/null
+    printf '%s' "$PATH"
+  ) || die "couldn't load the shell setup in $1"
+  printf '%s\n' "$new" | tr ':' '\n' | while IFS= read -r dir; do
+    case ":$base:" in
+      *":$dir:"*) ;;
+      *) [ -z "$dir" ] || echo "$dir" ;;
+    esac
+  done
 }
 
 # Adds `$1=$2` to the step's outputs.
