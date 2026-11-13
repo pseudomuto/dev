@@ -548,3 +548,17 @@ fn cache_key_works_out_the_image_without_image_os() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn resolve_version_trusts_the_action_path_over_the_ref() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("_actions/pseudomuto/dev/v0.3.1");
+    let vars = [
+        ("GITHUB_ACTION_PATH", path.to_str().unwrap()),
+        ("DEV_ACTION_REF", "main"),
+    ];
+    let r = run("resolve-version", &dir, &vars)?;
+    assert!(r.status.success(), "{}", r.stderr);
+    assert_eq!("version=0.3.1\ninstalled=false\n", r.output);
+    Ok(())
+}

@@ -33,8 +33,9 @@ main() {
 #
 # 1. INPUT_VERSION, the action's `version` input. `installed` means use the
 #    dev already on PATH (this repo's CI, which builds dev from the PR).
-# 2. The ref the action was used at: DEV_ACTION_REF, or the last part of
-#    GITHUB_ACTION_PATH, where GitHub checks the action out.
+# 2. The ref the action was used at: the last part of GITHUB_ACTION_PATH,
+#    where GitHub checks the action out, or else DEV_ACTION_REF
+#    (github.action_ref, which has quirks in composite actions).
 # 3. If that ref is a commit SHA (the usual way to pin an action), the release
 #    tag on that commit in DEV_ACTION_REPO.
 resolve_version() {
@@ -62,15 +63,12 @@ resolve_version() {
   output installed "$installed"
 }
 
-# The ref the action was used at, e.g. v0.2.0, or empty if it's unknown.
+# The ref the action was used at, e.g. v0.2.0, or empty if it's unknown. The
+# checkout path comes first: it's always the ref GitHub actually fetched.
 action_ref() {
-  if [ -n "${DEV_ACTION_REF:-}" ]; then
-    echo "$DEV_ACTION_REF"
-    return
-  fi
   case "${GITHUB_ACTION_PATH:-}" in
     */_actions/*) echo "${GITHUB_ACTION_PATH##*/}" ;;
-    *) echo "" ;;
+    *) echo "${DEV_ACTION_REF:-}" ;;
   esac
 }
 
