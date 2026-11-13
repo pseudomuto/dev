@@ -144,7 +144,7 @@ impl Rust {
             Some(dir) => dir.clone(),
             None => default_cargo_home()?,
         };
-        prepend_path(ctx, &cargo_home.join("bin"))
+        super::prepend_path(ctx, &cargo_home.join("bin"))
     }
 }
 
@@ -184,29 +184,6 @@ impl Dependency for Rust {
     fn down(&self, _ctx: &mut Context) -> crate::Result<()> {
         Ok(())
     }
-}
-
-/// Puts `dir` first on the `PATH` that `ctx` gives commands, unless it's
-/// already on it. Starts from a `PATH` the project env set, or else dev's
-/// own.
-fn prepend_path(ctx: &mut Context, dir: &Path) -> crate::Result<()> {
-    let current = match ctx.env.iter().find(|(name, _)| name == "PATH") {
-        Some((_, value)) => OsString::from(value),
-        None => env::var_os("PATH").unwrap_or_default(),
-    };
-    if env::split_paths(&current).any(|p| p == dir) {
-        return Ok(());
-    }
-
-    let joined = env::join_paths(std::iter::once(dir.to_path_buf()).chain(env::split_paths(&current)))
-        .wrap_err_with(|| format!("can't add {} to PATH", dir.display()))?;
-    let joined = joined
-        .into_string()
-        .map_err(|p| eyre!("PATH isn't valid UTF-8: {p:?}"))?;
-
-    ctx.env.retain(|(name, _)| name != "PATH");
-    ctx.env.push(("PATH".to_string(), joined));
-    Ok(())
 }
 
 /// Makes sure rustup is installed and its shell setup is written.

@@ -143,6 +143,25 @@ deps:
 - Every other key is a [mise](https://mise.jdx.dev) tool and its version. dev installs mise if it isn't already on
   `PATH`, and adds the tools to its own mise config (`~/.config/dev/mise.toml`), which mise loads alongside yours. Your
   own global mise config is never changed, and wins when both pin the same tool.
+- `packages` controls installing the project's own packages. You usually don't need it: after everything else, dev
+  finds these in the project root and installs them when they're out of date:
+
+  | Found                                                 | Runs                                       |
+  | ----------------------------------------------------- | ------------------------------------------ |
+  | `package.json`                                        | `npm`, `yarn`, `pnpm`, or `bun install`, by lockfile |
+  | `Gemfile`                                             | `bundle install`                           |
+  | `go.mod`                                              | `go mod download`                          |
+  | `Cargo.toml`                                          | `cargo fetch`                              |
+  | `uv.lock` / `poetry.lock`                             | `uv sync` / `poetry install`               |
+
+  "Out of date" means the manifest, lockfile, or runtime version (e.g. `node --version`) changed since the last
+  install, or `node_modules` / `.venv` is gone. The runtime has to be on `PATH`, e.g. `node: lts` under `deps`.
+  `packages: false` turns this off; `packages: [node, ruby]` installs only those, at that spot in `deps`.
+
+  When `CI` is set (as CI services do), installs use the lockfile as is and fail if it's out of date: `npm ci`,
+  `--frozen-lockfile` for yarn, pnpm, and bun, `BUNDLE_FROZEN=true`, `cargo fetch --locked`, and `uv sync --locked`.
+  An install that changes the manifest or lockfile anyway (e.g. `go mod download` filling in `go.sum`) fails, since
+  it means they weren't committed up to date.
 - `custom` is reserved for a future built-in dependency.
 
 ### commands

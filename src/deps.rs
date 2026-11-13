@@ -1,4 +1,6 @@
-use color_eyre::eyre::WrapErr;
+use std::{env, ffi::OsString, path::Path};
+
+use color_eyre::eyre::{WrapErr, eyre};
 
 use crate::{
     Context,
@@ -8,6 +10,7 @@ use crate::{
 
 pub mod brew;
 pub mod mise;
+pub mod packages;
 pub mod rust;
 
 pub trait Dependency {
@@ -74,6 +77,29 @@ pub fn tasks_met(tasks: &[Box<dyn Task>], ctx: &mut Context) -> Result<bool> {
     }
 
     Ok(true)
+}
+
+/// Puts `dir` first on the `PATH` that `ctx` gives commands, unless it's
+/// already on it. Starts from a `PATH` the project env set, or else dev's
+/// own.
+pub(crate) fn prepend_path(ctx: &mut Context, dir: &Path) -> Result<()> {
+    let current = match ctx.env.iter().find(|(name, _)| name == "PATH") {
+        Some((_, value)) => OsString::from(value),
+        None => env::var_os("PATH").unwrap_or_default(),
+    };
+    if env::split_paths(&current).any(|p| p == dir) {
+        return Ok(());
+    }
+
+    let joined = env::join_paths(std::iter::once(dir.to_path_buf()).chain(env::split_paths(&current)))
+        .wrap_err_with(|| format!("can't add {} to PATH", dir.display()))?;
+    let joined = joined
+        .into_string()
+        .map_err(|p| eyre!("PATH isn't valid UTF-8: {p:?}"))?;
+
+    ctx.env.retain(|(name, _)| name != "PATH");
+    ctx.env.push(("PATH".to_string(), joined));
+    Ok(())
 }
 
 pub trait Task {

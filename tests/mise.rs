@@ -7,8 +7,9 @@ use dev::{
     Context,
     Result,
     deps::{
+        Dependency,
         Task,
-        mise::{Binary, Config, Tool},
+        mise::{Binary, Config, Mise, Tool},
     },
 };
 use tempfile::{TempDir, tempdir};
@@ -403,6 +404,26 @@ fn tool_installs_with_ctx_env_when_mise_has_work_to_do() -> Result<()> {
     assert_eq!(
         vec!["/: install --dry-run-code python@3.14", "/: install python@3.14"],
         mise.calls()?
+    );
+    Ok(())
+}
+
+#[test]
+fn mise_puts_its_shims_on_path_for_what_comes_after() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("mise");
+    let dep = Mise::with_tasks(Vec::new()).with_data_dir(&data_dir);
+    let (mut ctx, _, _) = capturing_ctx();
+    ctx.env = vec![("PATH".to_string(), "/proj/bin:/usr/bin".to_string())];
+
+    assert!(dep.is_met(&mut ctx)?, "no tasks, so met");
+    dep.is_met(&mut ctx)?;
+
+    let want = format!("{}/shims:/proj/bin:/usr/bin", data_dir.display());
+    assert_eq!(
+        vec![("PATH".to_string(), want)],
+        ctx.env,
+        "first, once, and keeping the project's"
     );
     Ok(())
 }

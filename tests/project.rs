@@ -319,3 +319,74 @@ fn from_yaml_rejects_unclear_rust_entries() {
         assert!(err.contains(want), "want `{want}` for:\n{yaml}\ngot: {err}");
     }
 }
+
+/// Parses `yaml` as the dev.yaml of a dir holding `files` (each empty), and
+/// returns its deps' names.
+fn deps_in(yaml: &str, files: &[&str]) -> Result<Vec<String>> {
+    let dir = tempfile::tempdir()?;
+    for file in files {
+        std::fs::write(dir.path().join(file), "")?;
+    }
+    let project = Project::from_yaml_at(yaml, dir.path(), &|var| std::env::var(var))?;
+    Ok(project.deps.iter().map(|d| d.name().to_string()).collect())
+}
+
+#[test]
+fn packages_found_in_the_project_dir_are_installed_last() -> Result<()> {
+    let names = deps_in("name: demo\ndeps:\n  brew: [jq]\n  node: lts\n", &["package.json"])?;
+
+    assert_eq!(
+        names,
+        ["Install brew dependencies", "Install tools", "Install project packages"]
+    );
+    Ok(())
+}
+
+#[test]
+fn no_packages_dep_when_turned_off_or_none_are_found() -> Result<()> {
+    let off = deps_in(
+        "name: demo\ndeps:\n  brew: [jq]\n  packages: false\n",
+        &["package.json"],
+    )?;
+    assert_eq!(off, ["Install brew dependencies"]);
+
+    let none = deps_in("name: demo\ndeps:\n  brew: [jq]\n", &[])?;
+    assert_eq!(none, ["Install brew dependencies"]);
+    Ok(())
+}
+
+#[test]
+fn listed_packages_run_where_they_appear() -> Result<()> {
+    let files = &["package.json"];
+
+    let before = deps_in("name: demo\ndeps:\n  packages: [node]\n  node: lts\n", files)?;
+    assert_eq!(before, ["Install project packages", "Install tools"]);
+
+    let after = deps_in("name: demo\ndeps:\n  node: lts\n  packages: [node]\n", files)?;
+    assert_eq!(after, ["Install tools", "Install project packages"]);
+
+    let later = deps_in(
+        "name: demo\ndeps:\n  node: lts\n  brew: [jq]\n  packages: [node]\n",
+        files,
+    )?;
+    assert_eq!(
+        later,
+        ["Install tools", "Install brew dependencies", "Install project packages"]
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_bad_packages_settings() -> Result<()> {
+    for (value, expected) in [
+        ("true", "`packages: true` is the default"),
+        ("[java]", "java"),
+        ("[go]", "has none of its files (go.mod)"),
+    ] {
+        let yaml = format!("name: demo\ndeps:\n  packages: {value}\n");
+        let err = deps_in(&yaml, &["package.json"]).expect_err(value);
+        let msg = format!("{err:?}");
+        assert!(msg.contains(expected), "{value}: {msg}");
+    }
+    Ok(())
+}

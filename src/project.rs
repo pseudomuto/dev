@@ -14,6 +14,7 @@ use crate::{
         Dependency,
         brew::Brew,
         mise::Mise,
+        packages::{Eco, Mode, Packages},
         rust::{self, Rust},
     },
 };
@@ -53,6 +54,9 @@ pub struct Project {
     /// In the order they appear under `deps`. Keys other than built-in
     /// dependencies (e.g. `brew`) are tools, all installed by one mise
     /// dependency where the first one appears.
+    ///
+    /// When loaded from a file, the project's packages are installed last,
+    /// for each ecosystem found next to it, unless `packages` says otherwise.
     pub deps: Vec<Box<dyn Dependency>>,
 }
 
@@ -67,7 +71,12 @@ impl Project {
     pub fn load_with(path: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
         let path = path.as_ref();
         let yaml = fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-        Self::from_yaml_with(&yaml, lookup).wrap_err_with(|| format!("invalid project file {}", path.display()))
+        // `dev.yaml` has an empty parent; it means the current dir.
+        let root = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        Self::from_yaml_at(&yaml, root, lookup).wrap_err_with(|| format!("invalid project file {}", path.display()))
     }
 
     /// Parses a `dev.yaml` document, expanding env values from the process
@@ -82,7 +91,20 @@ impl Project {
 
     /// Like [`Project::from_yaml`], but `${VAR}` in env values comes from
     /// `lookup`.
+    ///
+    /// With no project dir to look in, `packages` is checked but adds
+    /// nothing; see [`Project::from_yaml_at`].
     pub fn from_yaml_with(yaml: &str, lookup: &Lookup<'_>) -> Result<Self> {
+        Self::parse(yaml, None, lookup)
+    }
+
+    /// Like [`Project::from_yaml_with`], for a `dev.yaml` in `root`, whose
+    /// packages are installed as `packages` says.
+    pub fn from_yaml_at(yaml: &str, root: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
+        Self::parse(yaml, Some(root.as_ref()), lookup)
+    }
+
+    fn parse(yaml: &str, root: Option<&Path>, lookup: &Lookup<'_>) -> Result<Self> {
         let raw: RawProject = serde_saphyr::from_str(yaml)?;
         validate_name(&raw.name)?;
 
@@ -95,11 +117,28 @@ impl Project {
             })
             .collect::<Result<_>>()?;
 
+        let mut deps = raw.deps.deps;
+        if let Some(root) = root {
+            match raw.deps.packages {
+                PackagesSetting::Auto => {
+                    let packages = Packages::detect(root, Mode::from_env());
+                    // Nothing found, so nothing to show.
+                    if !packages.tasks().is_empty() {
+                        deps.push(Box::new(packages));
+                    }
+                }
+                PackagesSetting::Off => {}
+                PackagesSetting::Only { ecos, at } => {
+                    deps.insert(at, Box::new(Packages::only(root, &ecos, Mode::from_env())?))
+                }
+            }
+        }
+
         Ok(Self {
             name: raw.name,
             env,
             commands: raw.commands,
-            deps: raw.deps.0,
+            deps,
         })
     }
 }
@@ -116,9 +155,64 @@ struct RawProject {
     deps: Deps,
 }
 
-/// The `deps` map, turned into dependencies by key as it's read.
+/// The `deps` map, turned into dependencies by key as it's read. Packages
+/// need the project dir, so only their setting is kept here.
 #[derive(Default)]
-struct Deps(Vec<Box<dyn Dependency>>);
+struct Deps {
+    deps: Vec<Box<dyn Dependency>>,
+    packages: PackagesSetting,
+}
+
+/// What `packages` under `deps` says.
+#[derive(Default)]
+enum PackagesSetting {
+    /// Not set: every ecosystem found, last.
+    #[default]
+    Auto,
+    /// `packages: false`.
+    Off,
+    /// `packages: [node, ruby]`: those, at index `at` of the deps.
+    Only { ecos: Vec<Eco>, at: usize },
+}
+
+/// The value of `packages`: `false`, or a list of ecosystems.
+enum PackagesValue {
+    Off,
+    Only(Vec<Eco>),
+}
+
+impl<'de> Deserialize<'de> for PackagesValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        deserializer.deserialize_any(PackagesVisitor)
+    }
+}
+
+struct PackagesVisitor;
+
+impl<'de> Visitor<'de> for PackagesVisitor {
+    type Value = PackagesValue;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("`false`, or a list of ecosystems like `[node, ruby]` (node, ruby, go, rust, python)")
+    }
+
+    fn visit_bool<E: de::Error>(self, v: bool) -> std::result::Result<PackagesValue, E> {
+        if v {
+            return Err(E::custom(
+                "`packages: true` is the default; leave it out, or list ecosystems like `[node, ruby]`",
+            ));
+        }
+        Ok(PackagesValue::Off)
+    }
+
+    fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<PackagesValue, A::Error> {
+        let mut ecos = Vec::new();
+        while let Some(eco) = seq.next_element::<Eco>()? {
+            ecos.push(eco);
+        }
+        Ok(PackagesValue::Only(ecos))
+    }
+}
 
 impl<'de> Deserialize<'de> for Deps {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
@@ -141,6 +235,10 @@ impl<'de> Visitor<'de> for DepsVisitor {
         // all met by one dependency, placed where the first tool appears.
         let mut tools: Vec<(String, String)> = Vec::new();
         let mut tools_at = None;
+        let mut packages = PackagesSetting::Auto;
+        // Whether `packages` came after the first tool, so it moves along
+        // when the tools dep is inserted before it.
+        let mut packages_after_tools = false;
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -151,6 +249,13 @@ impl<'de> Visitor<'de> for DepsVisitor {
                 "rust" => {
                     let entries: Vec<rust::Entry> = map.next_value()?;
                     deps.push(Box::new(Rust::new(entries)));
+                }
+                "packages" => {
+                    packages = match map.next_value()? {
+                        PackagesValue::Off => PackagesSetting::Off,
+                        PackagesValue::Only(ecos) => PackagesSetting::Only { ecos, at: deps.len() },
+                    };
+                    packages_after_tools = tools_at.is_some();
                 }
                 // Reserved for a built-in dependency, so it can't be a tool.
                 // Fail while reading the value so the error points at this
@@ -168,9 +273,14 @@ impl<'de> Visitor<'de> for DepsVisitor {
 
         if let Some(at) = tools_at {
             deps.insert(at, Box::new(Mise::new(tools)));
+            if let PackagesSetting::Only { at: packages_at, .. } = &mut packages
+                && packages_after_tools
+            {
+                *packages_at += 1;
+            }
         }
 
-        Ok(Deps(deps))
+        Ok(Deps { deps, packages })
     }
 }
 
