@@ -1,0 +1,19 @@
+[project]
+name = "{{name}}"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = []
+
+[tool.uv]
+# An app, not a library: uv installs its dependencies but doesn't build it.
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.5",
+]

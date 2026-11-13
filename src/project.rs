@@ -296,7 +296,7 @@ impl<'de> de::DeserializeSeed<'de> for Unsupported<'_> {
 }
 
 /// Requires lowercase letters and digits in words separated by single dashes.
-fn validate_name(name: &str) -> Result<()> {
+pub fn validate_name(name: &str) -> Result<()> {
     let valid = name
         .split('-')
         .all(|word| !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));

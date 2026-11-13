@@ -152,10 +152,16 @@ jobs:
           key: ${{ matrix.target }}
 
       # rust-toolchain.toml lists every target, so rustup installs this one.
+      # DEV_RELEASE_SHA is the tagged commit checked out above (not
+      # github.sha, the commit before the bump); `dev new` pins templates'
+      # use of this repo's action to it.
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo build --release --locked --target "$TARGET"
+        run: |
+          DEV_RELEASE_SHA=$(git rev-parse HEAD)
+          export DEV_RELEASE_SHA
+          cargo build --release --locked --target "$TARGET"
 
       - name: Package
         env:

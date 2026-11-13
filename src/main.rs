@@ -12,6 +12,7 @@ use color_eyre::{
 };
 use dev::{
     Context,
+    new::{self, Templates},
     project::Project,
     report::{Plain, Reporter, clack::Clack},
     run_log::{self, RunLog},
@@ -33,6 +34,15 @@ struct Cli {
 enum Command {
     /// Meet every dependency in ./dev.yaml
     Up,
+    /// Create ./<NAME> from a template, then git init it and run dev up in it
+    New {
+        /// The project's name: lowercase words separated by dashes
+        name: String,
+        /// The template to use, e.g. go or rust. Your own in
+        /// ~/.config/dev/templates/<name> win over the built-in ones
+        #[arg(short, long)]
+        template: String,
+    },
     /// Take down every dependency in ./dev.yaml, last one first
     Down,
     /// Print the shell setup. Add `eval "$(dev shell-init)"` to your
@@ -59,6 +69,9 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = parse_cli();
     let vars = process_env()?;
+
+    // The template's notes, printed once `dev new` has run `dev up`.
+    let mut notes = None;
 
     // These run anywhere, with or without ./dev.yaml.
     match cli.command {
@@ -90,12 +103,31 @@ async fn main() -> Result<()> {
             println!("{notice}");
             return Ok(());
         }
+        // Creates the project, then carries on below as `dev up` in it.
+        Command::New { ref name, ref template } => {
+            let dest = Path::new(name);
+            notes = Templates::user_default()?.find(template)?.create(name, dest)?;
+            new::git_init(&Context::default(), dest)?;
+            env::set_current_dir(dest).wrap_err_with(|| format!("failed to change to {name}"))?;
+        }
         _ => {}
     }
 
     print_update_notice();
 
-    let project = Project::load(PROJECT_FILE)?;
+    let project = match cli.command {
+        // The shell's `$PWD` is still the parent dir, but `${PWD}` in
+        // dev.yaml must be the new project's.
+        Command::New { .. } => {
+            let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
+            let cwd = cwd.to_string_lossy().into_owned();
+            Project::load_with(PROJECT_FILE, &|var| match var {
+                "PWD" => Ok(cwd.clone()),
+                _ => env::var(var),
+            })?
+        }
+        _ => Project::load(PROJECT_FILE)?,
+    };
     reject_built_in_names(&project)?;
 
     // A shell that already loaded this dev.yaml has its env, so expanding it
@@ -116,6 +148,17 @@ async fn main() -> Result<()> {
             unreachable!("handled before loading dev.yaml")
         }
         Command::Up => with_run_log(&mut ctx, "up", &project.name, |ctx| dev::up(ctx, &project))?,
+        Command::New { name, .. } => {
+            let up = with_run_log(&mut ctx, "up", &project.name, |ctx| dev::up(ctx, &project));
+            if up.is_ok() {
+                println!("\nCreated {name}. Next: cd {name}");
+            }
+            // The project exists either way, so its notes still apply.
+            if let Some(notes) = notes {
+                println!("\n{}", notes.trim_end());
+            }
+            up.with_note(|| format!("{name} was created; run `dev up` in it to try again"))?;
+        }
         Command::Down => with_run_log(&mut ctx, "down", &project.name, |ctx| dev::down(ctx, &project))?,
         Command::Project(args) => {
             let (name, args) = args.split_first().expect("clap passes the command name first");

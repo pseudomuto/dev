@@ -452,3 +452,42 @@ fn up_rejects_an_unknown_dev_ui() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn new_creates_a_project_from_a_user_template() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    // No deps, so the `dev up` it runs applies nothing.
+    let template = dir.path().join("home/.config/dev/templates/t");
+    std::fs::create_dir_all(&template)?;
+    std::fs::write(template.join("dev.yaml"), "name: {{name}}\n")?;
+    std::fs::write(template.join(".dev-notes.txt"), "Rename {{name}} first.\n")?;
+
+    let output = dev(&dir, &["new", "demo", "-t", "t"])?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(Some(0), output.status.code(), "stderr: {stderr}");
+    let demo = dir.path().join("demo");
+    assert_eq!("name: demo\n", std::fs::read_to_string(demo.join("dev.yaml"))?);
+    assert!(demo.join(".git").is_dir(), "no git repo");
+    assert!(demo.join(".dev/log/latest").exists(), "dev up didn't run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.ends_with("Next: cd demo\n\nRename demo first.\n"),
+        "stdout: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn new_fails_when_the_dir_exists() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir(dir.path().join("demo"))?;
+
+    let output = dev(&dir, &["new", "demo", "-t", "go"])?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(Some(1), output.status.code(), "stderr: {stderr}");
+    assert!(stderr.contains("failed to create demo"), "stderr: {stderr}");
+    assert!(!dir.path().join("demo/.git").exists(), "git init ran anyway");
+    Ok(())
+}

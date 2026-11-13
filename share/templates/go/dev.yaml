@@ -1,0 +1,33 @@
+name: {{name}}
+
+deps:
+  go: "1.27"
+  golangci-lint: "2.15"
+  actionlint: "1.7"
+
+commands:
+  build:
+    desc: Build the project
+    run: go build ./... "$@"
+
+  run:
+    desc: Run the binary
+    run: go run . "$@"
+
+  test:
+    desc: Run the tests
+    run: go test -race -covermode=atomic -coverprofile=coverage.out ./... "$@"
+
+  fmt:
+    desc: Format Go code
+    run: |
+      go fix ./...
+      golangci-lint fmt
+
+  lint:
+    desc: Lint Go code
+    run: golangci-lint run ./... "$@"
+
+  lint:actions:
+    desc: Lint the GitHub Actions workflows
+    run: actionlint "$@"

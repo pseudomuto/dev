@@ -1,0 +1,32 @@
+name: {{name}}
+
+deps:
+  python: "3.14"
+  uv: "0.13"
+  actionlint: "1.7"
+
+commands:
+  run:
+    desc: Run the project
+    run: uv run python main.py "$@"
+
+  test:
+    desc: Run the tests
+    run: uv run pytest "$@"
+
+  fmt:
+    desc: Format the code
+    run: |
+      uv run ruff check --fix
+      uv run ruff format
+
+  lint:
+    desc: Lint the code
+    run: |
+      set -e
+      uv run ruff check
+      uv run ruff format --check
+
+  lint:actions:
+    desc: Lint the GitHub Actions workflows
+    run: actionlint "$@"

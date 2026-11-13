@@ -7,7 +7,8 @@ WORKDIR /src
 # rustup download macOS/musl targets this build doesn't need.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-# Built into the binary for `dev shell-init` and `dev self-update`.
+# Built into the binary for `dev shell-init`, `dev self-update`, and the
+# `dev new` templates.
 COPY share ./share
 COPY install.sh ./
 RUN cargo build --release --locked
