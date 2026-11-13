@@ -1,0 +1,151 @@
+name: dev
+description: Install dev and run `dev up`, with a cache, so later steps have every tool in the project's dev.yaml.
+author: pseudomuto
+
+# The logic lives in share/action/dev-action.sh, where it's tested
+# (tests/action.rs). Each step here runs one of its subcommands.
+
+inputs:
+  version:
+    description: >-
+      dev version to install, e.g. 0.2.0. Defaults to the release the action is
+      used at (its tag, or the tag on a pinned commit). `installed` uses the dev
+      already on PATH.
+    required: false
+  cache:
+    description: Restore and save a cache of what `dev up` installs.
+    required: false
+    default: "true"
+  cache-key-files:
+    description: >-
+      Extra files whose contents should change the cache key, one glob per line
+      (e.g. **/go.sum). Each must match at least one tracked file.
+    required: false
+  export-env:
+    description: >-
+      Also export dev.yaml's env to later steps. `dev <cmd>` always applies it;
+      this is for steps that run tools directly.
+    required: false
+    default: "false"
+
+outputs:
+  version:
+    description: The dev version installed.
+    value: ${{ steps.version.outputs.version }}
+  cache-hit:
+    description: Whether the cache key matched exactly.
+    value: ${{ steps.restore.outputs.cache-hit == 'true' }}
+
+runs:
+  using: composite
+  steps:
+    # A release build of dev would otherwise replace itself with the latest
+    # release mid-job.
+    - name: Turn off dev's auto-update
+      shell: bash
+      run: echo DEV_AUTO_UPDATE=0 >> "$GITHUB_ENV"
+
+    - name: Pick the dev version
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        DEV_ACTION_REF: ${{ github.action_ref }}
+      run: sh "$GITHUB_ACTION_PATH/share/action/dev-action.sh" resolve-version
+
+    - name: Install dev ${{ steps.version.outputs.version }}
+      if: steps.version.outputs.installed != 'true'
+      shell: bash
+      env:
+        DEV_VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        DEV_INSTALL_DIR="$HOME/.local/bin" sh "$GITHUB_ACTION_PATH/install.sh"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Build the cache key
+      id: key
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        DEV_ACTION_OS: ${{ runner.os }}
+        DEV_ACTION_ARCH: ${{ runner.arch }}
+        DEV_VERSION: ${{ steps.version.outputs.version }}
+        INPUT_CACHE_KEY_FILES: ${{ inputs.cache-key-files }}
+      run: sh "$GITHUB_ACTION_PATH/share/action/dev-action.sh" cache-key
+
+    # dev's own mise config (~/.config) is left out on purpose: dev only adds
+    # to it, so a cached copy would keep tools removed from dev.yaml working.
+    # The stable toolchain ships with GitHub's images.
+    - name: Restore the cache
+      id: restore
+      if: inputs.cache == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+        path: |
+          ~/.rustup/toolchains
+          !~/.rustup/toolchains/stable-*
+          ~/.rustup/update-hashes
+          ~/.local/bin/mise
+          ~/.local/bin/zb
+          ~/.local/bin/zb-brew
+          ~/.local/bin/zbx
+          ~/.local/share/mise/installs
+          ~/.local/share/mise/shims
+          ~/.local/share/zerobrew
+          ~/.local/share/dev/shell
+
+    - name: dev up
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        DEV_UI: plain
+      run: |
+        if ! dev up; then
+          echo "::group::.dev/log/latest"
+          cat .dev/log/latest || :
+          echo "::endgroup::"
+          exit 1
+        fi
+
+    # Drops tool versions dev.yaml no longer uses, so they don't pile up in
+    # every later cache. It never prompts.
+    - name: Prune unused tool versions
+      if: inputs.cache == 'true'
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        PATH="$HOME/.local/bin:$PATH"
+        if command -v mise > /dev/null; then
+          mise prune --tools < /dev/null
+        fi
+
+    # Right after `dev up`, so a later failing step doesn't lose it.
+    - name: Save the cache
+      if: inputs.cache == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        key: ${{ steps.key.outputs.key }}
+        path: |
+          ~/.rustup/toolchains
+          !~/.rustup/toolchains/stable-*
+          ~/.rustup/update-hashes
+          ~/.local/bin/mise
+          ~/.local/bin/zb
+          ~/.local/bin/zb-brew
+          ~/.local/bin/zbx
+          ~/.local/share/mise/installs
+          ~/.local/share/mise/shims
+          ~/.local/share/zerobrew
+          ~/.local/share/dev/shell
+
+    - name: Put dev's tools on PATH
+      shell: bash
+      run: sh "$GITHUB_ACTION_PATH/share/action/dev-action.sh" path
+
+    - name: Export dev.yaml's env
+      if: inputs.export-env == 'true'
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: sh "$GITHUB_ACTION_PATH/share/action/dev-action.sh" export-env
