@@ -470,3 +470,29 @@ fn export_env_sends_path_entries_to_github_path() -> Result<()> {
     assert_eq!("", r.env, "PATH must never go to $GITHUB_ENV");
     Ok(())
 }
+
+#[test]
+fn path_exports_the_vars_a_tool_setup_sets() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    home_file(
+        &dir,
+        ".local/share/dev/shell/zerobrew",
+        concat!(
+            "export ZEROBREW_PREFIX=\"$HOME/zb\"\n",
+            "export PKG_CONFIG_PATH=\"$ZEROBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}\"\n",
+            "export PATH=\"$ZEROBREW_PREFIX/bin:$PATH\"\n",
+        ),
+    )?;
+
+    let r = run("path", &dir, &[])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    let home = dir.path().join("home");
+    let home = home.display();
+    let want = vec![
+        ("PKG_CONFIG_PATH".to_string(), format!("{home}/zb/lib/pkgconfig:")),
+        ("ZEROBREW_PREFIX".to_string(), format!("{home}/zb")),
+    ];
+    assert_eq!(want, parse_github_env(&r.env));
+    assert_eq!(format!("{home}/.local/bin\n{home}/zb/bin\n"), r.path);
+    Ok(())
+}

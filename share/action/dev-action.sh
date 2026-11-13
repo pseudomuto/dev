@@ -22,6 +22,8 @@ main() {
     cache-key) cache_key ;;
     path) path ;;
     export-env) export_env ;;
+    # Internal: run by `path` in a separate shell.
+    load-setup) load_setup "$2" ;;
     *) die "unknown subcommand '${1:-}'; expected resolve-version, cache-key, path, or export-env" 2 ;;
   esac
 }
@@ -167,7 +169,8 @@ sha256() {
 
 # Adds the dirs `dev up` set up to $GITHUB_PATH, in the order `dev
 # shell-init` would put them on PATH: mise's shims, then rustup's and
-# zerobrew's dirs, then ~/.local/bin (dev itself).
+# zerobrew's dirs, then ~/.local/bin (dev itself). Any other vars those
+# setups set (e.g. zerobrew's PKG_CONFIG_PATH) go to $GITHUB_ENV.
 #
 # rustup's and zerobrew's are read from the setup dev wrote for each, so they
 # can't drift from what a shell gets. mise's setup is `mise activate`, which
@@ -211,15 +214,47 @@ new_dirs() {
 }
 
 # Prints the dirs that sourcing the shell setup in $1 puts on PATH, highest
-# priority first, one per line. Nothing if $1 doesn't exist.
+# priority first, one per line, and adds any other vars it sets to
+# $GITHUB_ENV. Nothing if $1 doesn't exist.
 added_by() {
   [ -f "$1" ] || return 0
+  need jq "to read the shell setup in $1"
   base=/usr/bin:/bin
-  # A separate shell, so the setup can't change anything in this one. $1 and
-  # $PATH are escaped so they expand in that shell.
-  new=$(PATH=$base /bin/sh -c ". \"\$1\" >/dev/null && printf '%s' \"\$PATH\"" sh "$1") ||
+  # A separate shell, so the setup can't change anything in this one.
+  setup=$(PATH=$base DEV_ACTION_JQ=$(command -v jq) /bin/sh "$0" load-setup "$1") ||
     die "couldn't load the shell setup in $1"
-  new_dirs "$new" "$base"
+
+  printf '%s' "$setup" | jq -r --arg d "$(delimiter)" '
+    .vars | to_entries[]
+    | if (.value | contains($d)) then error("the value of \(.key) contains \($d); run the action again") else . end
+    | "\(.key)<<\($d)\n\(.value)\n\($d)"' >>"$GITHUB_ENV" ||
+    die "couldn't export the vars set by $1"
+  new_dirs "$(printf '%s' "$setup" | jq -r .path)" "$base"
+}
+
+# Sources the shell setup in $1 and prints, as JSON, the resulting PATH and
+# every other var it set or changed. Runs in its own shell (see `added_by`),
+# with jq at DEV_ACTION_JQ since the setup may change PATH.
+load_setup() {
+  jq=${DEV_ACTION_JQ:?}
+  before=$("$jq" -n env)
+  # shellcheck source=/dev/null
+  . "$1" >/dev/null
+  # shellcheck disable=SC2016 # $before is a jq variable, not a shell one.
+  "$jq" -n --argjson before "$before" '{
+    path: env.PATH,
+    vars: env | to_entries | map(select(.key != "PATH" and $before[.key] != .value)) | sort_by(.key) | from_entries
+  }'
+}
+
+# A heredoc delimiter for $GITHUB_ENV that no value will contain.
+delimiter() {
+  echo "DEV_EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+}
+
+# Fails unless $1 is on PATH, saying it's needed $2.
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "\`$1\` is required $2, but isn't on PATH"
 }
 
 # Exports the env that dev.yaml sets, as `dev` evaluates it, to later steps:
@@ -228,9 +263,8 @@ added_by() {
 # exported, so `dev <cmd>` in a later step evaluates dev.yaml again and a
 # step's own overrides still reach `${VAR:-default}`.
 export_env() {
-  for cmd in dev jq; do
-    command -v "$cmd" >/dev/null 2>&1 || die "\`$cmd\` is required to export dev.yaml's env, but isn't on PATH"
-  done
+  need dev "to export dev.yaml's env"
+  need jq "to export dev.yaml's env"
   cd "${GITHUB_WORKSPACE:?}"
   PWD=$(pwd)
   export PWD DEV_AUTO_UPDATE=0
@@ -241,7 +275,7 @@ export_env() {
   # Nothing to export when dev.yaml has no env.
   [ -n "${__DEV_ENV:-}" ] || return 0
 
-  delim="DEV_EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  delim=$(delimiter)
   names=$(printf '%s' "$__DEV_ENV" | jq -r '.baseline | keys[]') ||
     die "couldn't read the vars dev set from its state; this is a bug in dev"
   for name in $names; do
