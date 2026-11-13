@@ -119,8 +119,9 @@ version_from() {
   echo "$v"
 }
 
-# Writes `prefix` (dev-<os>-<arch>-<version>-) and `key` (the prefix and a
-# hash) to $GITHUB_OUTPUT. Runs in the workspace. The hash covers dev.yaml,
+# Writes `prefix` (dev-<os>-<arch>-<image>-<version>-) and `key` (the prefix
+# and a hash) to $GITHUB_OUTPUT. The image (e.g. ubuntu24) keeps tools built on
+# one OS release from being restored onto another, where they may not run. Runs in the workspace. The hash covers dev.yaml,
 # rust-toolchain.toml if there is one, and the tracked files matching each
 # line of INPUT_CACHE_KEY_FILES. Language manifests are left out on purpose:
 # they don't change what `dev up` installs.
@@ -157,9 +158,32 @@ cache_key() {
 
   os=$(printf '%s' "${DEV_ACTION_OS:?}" | tr '[:upper:]' '[:lower:]')
   arch=$(printf '%s' "${DEV_ACTION_ARCH:?}" | tr '[:upper:]' '[:lower:]')
-  prefix="dev-$os-$arch-${DEV_VERSION:?}-"
+  image=${ImageOS:-}
+  if [ -z "$image" ]; then
+    image=$(os_image)
+  fi
+  prefix="dev-$os-$arch-$image-${DEV_VERSION:?}-"
   output prefix "$prefix"
   output key "$prefix$hash"
+}
+
+# The OS and its major version, e.g. ubuntu24 or macos15, for runners that
+# don't set ImageOS (self-hosted ones).
+os_image() {
+  case "$(uname -s)" in
+    Darwin)
+      v=$(sw_vers -productVersion) || die "couldn't read the macOS version; set ImageOS"
+      echo "macos${v%%.*}"
+      ;;
+    Linux)
+      [ -f /etc/os-release ] || die "can't tell which Linux this is without /etc/os-release; set ImageOS"
+      # shellcheck source=/dev/null
+      id=$(. /etc/os-release && echo "${ID:-}${VERSION_ID:-}")
+      [ -n "$id" ] || die "/etc/os-release has no ID or VERSION_ID; set ImageOS"
+      echo "${id%%.*}"
+      ;;
+    *) die "can't tell which OS image this is; set ImageOS" ;;
+  esac
 }
 
 # Prints the SHA-256 of stdin, in hex.

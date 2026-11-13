@@ -212,9 +212,11 @@ fn resolve_version_fails_when_installed_dev_is_missing() -> Result<()> {
     Ok(())
 }
 
-/// Vars for `cache-key`: a Linux x64 runner and dev 0.2.0.
+/// Vars for `cache-key`: a Linux x64 runner on GitHub's Ubuntu 24.04 image,
+/// and dev 0.2.0.
 const KEY_VARS: &[(&str, &str)] = &[
     ("DEV_ACTION_OS", "Linux"),
+    ("ImageOS", "ubuntu24"),
     ("DEV_ACTION_ARCH", "X64"),
     ("DEV_VERSION", "0.2.0"),
 ];
@@ -248,7 +250,7 @@ fn cache_key_is_stable_and_covers_dev_yaml() -> Result<()> {
     let a = run("cache-key", &dir, KEY_VARS)?;
     assert!(
         a.output
-            .starts_with("prefix=dev-linux-x64-0.2.0-\nkey=dev-linux-x64-0.2.0-"),
+            .starts_with("prefix=dev-linux-x64-ubuntu24-0.2.0-\nkey=dev-linux-x64-ubuntu24-0.2.0-"),
         "{}{}",
         a.output,
         a.stderr
@@ -512,4 +514,37 @@ fn cache_key_covers_files_with_non_ascii_names() -> Result<()> {
     let dir = tempfile::tempdir()?;
     workspace(&dir, &[("dev.yaml", "name: demo\n"), ("café.lock", "x\n")])?;
     assert_key_change(&dir, "café.lock", true, &[("INPUT_CACHE_KEY_FILES", "*.lock")])
+}
+
+#[test]
+fn cache_key_separates_runner_images() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
+    let older: Vec<(&str, &str)> = KEY_VARS.iter().chain(&[("ImageOS", "ubuntu22")]).copied().collect();
+    let r = run("cache-key", &dir, &older)?;
+    assert!(
+        r.output.starts_with("prefix=dev-linux-x64-ubuntu22-0.2.0-\n"),
+        "{}{}",
+        r.output,
+        r.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn cache_key_works_out_the_image_without_image_os() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
+    // Self-hosted runners don't set ImageOS; the host's OS stands in.
+    let vars: Vec<(&str, &str)> = KEY_VARS.iter().chain(&[("ImageOS", "")]).copied().collect();
+    let r = run("cache-key", &dir, &vars)?;
+    let prefix = r.output.lines().next().unwrap_or_default();
+    let image = prefix.split('-').nth(3).unwrap_or_default();
+    let (name, version) = image.split_at(image.find(|c: char| c.is_ascii_digit()).unwrap_or(image.len()));
+    assert!(
+        !name.is_empty() && !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()),
+        "expected an image like ubuntu24 or macos15 in {prefix:?}: {}",
+        r.stderr
+    );
+    Ok(())
 }
