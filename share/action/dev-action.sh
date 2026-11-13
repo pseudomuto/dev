@@ -7,6 +7,7 @@
 #   resolve-version   Works out which dev to install.
 #   cache-key         Builds the cache key from what `dev up` reads.
 #   path              Puts the tools `dev up` installed on PATH.
+#   export-env        Exports dev.yaml's env to later steps.
 #
 # Settings come in as env vars, and results go to the files GitHub gives each
 # step ($GITHUB_OUTPUT, $GITHUB_PATH, $GITHUB_ENV). Every failure says what to
@@ -20,6 +21,7 @@ main() {
     resolve-version) resolve_version ;;
     cache-key) cache_key ;;
     path) path ;;
+    export-env) export_env ;;
     *) die "unknown subcommand '${1:-}'; expected resolve-version, cache-key, path, or export-env" 2 ;;
   esac
 }
@@ -186,9 +188,26 @@ path() {
     } | awk '!seen[$0]++'
   )
 
-  # GitHub puts each line in front of the ones before it, so write them
-  # lowest priority first.
-  printf '%s\n' "$dirs" | awk '{ lines[NR] = $0 } END { for (i = NR; i > 0; i--) print lines[i] }' >>"$GITHUB_PATH"
+  add_to_path "$dirs"
+}
+
+# Adds the dirs in $1 (one per line, highest priority first) to $GITHUB_PATH.
+# GitHub puts each line in front of the ones before it, so they're written
+# lowest priority first.
+add_to_path() {
+  [ -n "$1" ] || return 0
+  printf '%s\n' "$1" | awk '{ lines[NR] = $0 } END { for (i = NR; i > 0; i--) print lines[i] }' >>"$GITHUB_PATH"
+}
+
+# Prints the dirs in PATH-style list $1 that aren't in $2, in order, one per
+# line.
+new_dirs() {
+  printf '%s\n' "$1" | tr ':' '\n' | while IFS= read -r dir; do
+    case ":$2:" in
+      *":$dir:"*) ;;
+      *) [ -z "$dir" ] || echo "$dir" ;;
+    esac
+  done
 }
 
 # Prints the dirs that sourcing the shell setup in $1 puts on PATH, highest
@@ -196,19 +215,55 @@ path() {
 added_by() {
   [ -f "$1" ] || return 0
   base=/usr/bin:/bin
-  new=$(
-    set +eu
-    PATH=$base
-    # shellcheck source=/dev/null
-    . "$1" >/dev/null
-    printf '%s' "$PATH"
-  ) || die "couldn't load the shell setup in $1"
-  printf '%s\n' "$new" | tr ':' '\n' | while IFS= read -r dir; do
-    case ":$base:" in
-      *":$dir:"*) ;;
-      *) [ -z "$dir" ] || echo "$dir" ;;
-    esac
+  # A separate shell, so the setup can't change anything in this one. $1 and
+  # $PATH are escaped so they expand in that shell.
+  new=$(PATH=$base /bin/sh -c ". \"\$1\" >/dev/null && printf '%s' \"\$PATH\"" sh "$1") ||
+    die "couldn't load the shell setup in $1"
+  new_dirs "$new" "$base"
+}
+
+# Exports the env that dev.yaml sets, as `dev` evaluates it, to later steps:
+# vars through $GITHUB_ENV, and new PATH entries through $GITHUB_PATH (never
+# PATH itself, which would replace the runner's). dev's own state var isn't
+# exported, so `dev <cmd>` in a later step evaluates dev.yaml again and a
+# step's own overrides still reach `${VAR:-default}`.
+export_env() {
+  for cmd in dev jq; do
+    command -v "$cmd" >/dev/null 2>&1 || die "\`$cmd\` is required to export dev.yaml's env, but isn't on PATH"
   done
+  cd "${GITHUB_WORKSPACE:?}"
+  PWD=$(pwd)
+  export PWD DEV_AUTO_UPDATE=0
+
+  base=$PATH
+  script=$(dev hook-env) || die "\`dev hook-env\` failed; see its error above"
+  eval "$script"
+  # Nothing to export when dev.yaml has no env.
+  [ -n "${__DEV_ENV:-}" ] || return 0
+
+  delim="DEV_EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  names=$(printf '%s' "$__DEV_ENV" | jq -r '.baseline | keys[]') ||
+    die "couldn't read the vars dev set from its state; this is a bug in dev"
+  for name in $names; do
+    case "$name" in
+      PATH | __DEV_ENV) continue ;;
+    esac
+    # Unset by dev.yaml: nothing to export.
+    printenv "$name" >/dev/null || continue
+    # printenv adds a newline, and $(...) strips all trailing ones, so mark
+    # the end to keep any the value has.
+    value=$(
+      printenv "$name"
+      echo .
+    )
+    value=${value%?.}
+    case "$value" in
+      *"$delim"*) die "the value of $name contains $delim; run the action again" ;;
+    esac
+    printf '%s<<%s\n%s\n%s\n' "$name" "$delim" "$value" "$delim" >>"$GITHUB_ENV"
+  done
+
+  add_to_path "$(new_dirs "$PATH" "$base")"
 }
 
 # Adds `$1=$2` to the step's outputs.

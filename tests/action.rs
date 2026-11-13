@@ -20,6 +20,8 @@ struct Run {
     output: String,
     /// `$GITHUB_PATH`'s contents.
     path: String,
+    /// `$GITHUB_ENV`'s contents.
+    env: String,
 }
 
 /// Runs `dev-action.sh <sub>` with `$HOME` at `dir/home`, cwd and
@@ -55,6 +57,7 @@ fn run(sub: &str, dir: &TempDir, vars: &[(&str, &str)]) -> Result<Run> {
         stderr: String::from_utf8(out.stderr)?,
         output: fs::read_to_string(&files[0])?,
         path: fs::read_to_string(&files[1])?,
+        env: fs::read_to_string(&files[2])?,
     })
 }
 
@@ -395,5 +398,75 @@ fn path_follows_xdg_data_home() -> Result<()> {
         format!("{home}/.local/bin\n{home}/.cargo/bin\n{home}/data/mise/shims\n"),
         r.path
     );
+    Ok(())
+}
+
+/// Reads `$GITHUB_ENV` written as `NAME<<DELIM`, value lines, `DELIM`.
+fn parse_github_env(s: &str) -> Vec<(String, String)> {
+    let mut vars = Vec::new();
+    let mut lines = s.lines();
+    while let Some(line) = lines.next() {
+        let (name, delim) = line
+            .split_once("<<")
+            .unwrap_or_else(|| panic!("not a NAME<<DELIM line: {line:?}"));
+        let value: Vec<&str> = lines.by_ref().take_while(|l| *l != delim).collect();
+        vars.push((name.to_string(), value.join("\n")));
+    }
+    vars
+}
+
+/// Runs `export-env` with the real dev on `PATH` and `yaml` as the
+/// workspace's dev.yaml, plus `vars`.
+fn export_env(dir: &TempDir, yaml: &str, vars: &[(&str, &str)]) -> Result<Run> {
+    fs::create_dir_all(dir.path().join("work"))?;
+    fs::write(dir.path().join("work/dev.yaml"), yaml)?;
+    let path = path_with_dev();
+    let vars: Vec<(&str, &str)> = [("PATH", path.as_str())].iter().chain(vars).copied().collect();
+    let r = run("export-env", dir, &vars)?;
+    assert!(r.status.success(), "{}", r.stderr);
+    Ok(r)
+}
+
+#[test]
+fn export_env_exports_dev_yaml_env() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let r = export_env(&dir, "name: demo\nenv:\n  GREETING: hi\n  DB: \"${DB:-local}\"\n", &[])?;
+    let want = vec![
+        ("DB".to_string(), "local".to_string()),
+        ("GREETING".to_string(), "hi".to_string()),
+    ];
+    assert_eq!(want, parse_github_env(&r.env));
+    assert!(!r.env.contains("__DEV_ENV"), "{}", r.env);
+    Ok(())
+}
+
+#[test]
+fn export_env_honours_overrides() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let r = export_env(&dir, "name: demo\nenv:\n  DB: \"${DB:-local}\"\n", &[("DB", "ci")])?;
+    assert_eq!(vec![("DB".to_string(), "ci".to_string())], parse_github_env(&r.env));
+    Ok(())
+}
+
+#[test]
+fn export_env_keeps_values_exactly() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let value = "a\nb 'c' \"d\" $X =e \\n\n";
+    // A YAML double-quoted scalar, with its escapes, so the value is exact.
+    let yaml = format!("name: demo\nenv:\n  MULTI: {value:?}\n");
+    let r = export_env(&dir, &yaml, &[])?;
+    assert_eq!(vec![("MULTI".to_string(), value.to_string())], parse_github_env(&r.env));
+    Ok(())
+}
+
+#[test]
+fn export_env_sends_path_entries_to_github_path() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let r = export_env(&dir, "name: demo\nenv:\n  PATH: \"${PWD}/bin:${PATH}\"\n", &[])?;
+    // `${PWD}` is the workspace as GitHub gives it, not with symlinks
+    // resolved (on macOS the temp dir is behind /var -> /private/var).
+    let work = dir.path().join("work");
+    assert_eq!(format!("{}/bin\n", work.display()), r.path);
+    assert_eq!("", r.env, "PATH must never go to $GITHUB_ENV");
     Ok(())
 }
