@@ -205,3 +205,120 @@ fn resolve_version_fails_when_installed_dev_is_missing() -> Result<()> {
     assert_failed(&r, "version is 'installed' but there's no dev on PATH");
     Ok(())
 }
+
+/// Vars for `cache-key`: a Linux x64 runner and dev 0.2.0.
+const KEY_VARS: &[(&str, &str)] = &[
+    ("DEV_ACTION_OS", "Linux"),
+    ("DEV_ACTION_ARCH", "X64"),
+    ("DEV_VERSION", "0.2.0"),
+];
+
+/// Makes `dir/work` a git repo holding `files` (path, contents), all
+/// tracked, and returns its path.
+fn workspace(dir: &TempDir, files: &[(&str, &str)]) -> Result<std::path::PathBuf> {
+    let work = dir.path().join("work");
+    fs::create_dir_all(&work)?;
+    git(&work, &["init", "-q"])?;
+    for (path, contents) in files {
+        let file = work.join(path);
+        fs::create_dir_all(file.parent().expect("files are in a dir"))?;
+        fs::write(&file, contents)?;
+        git(&work, &["add", path])?;
+    }
+    Ok(work)
+}
+
+/// The `key=` line of a `cache-key` run.
+fn key(r: &Run) -> &str {
+    assert!(r.status.success(), "{}", r.stderr);
+    r.output.lines().find(|l| l.starts_with("key=")).expect("a key line")
+}
+
+#[test]
+fn cache_key_is_stable_and_covers_dev_yaml() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let work = workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
+
+    let a = run("cache-key", &dir, KEY_VARS)?;
+    assert!(
+        a.output
+            .starts_with("prefix=dev-linux-x64-0.2.0-\nkey=dev-linux-x64-0.2.0-"),
+        "{}{}",
+        a.output,
+        a.stderr
+    );
+    assert_eq!(key(&a), key(&run("cache-key", &dir, KEY_VARS)?));
+
+    fs::write(work.join("dev.yaml"), "name: other\n")?;
+    assert_ne!(key(&a), key(&run("cache-key", &dir, KEY_VARS)?));
+    Ok(())
+}
+
+/// Asserts changing `file` in the workspace changes the key (or doesn't, when
+/// `changes` is false), with `vars` on top of [`KEY_VARS`].
+fn assert_key_change(dir: &TempDir, file: &str, changes: bool, vars: &[(&str, &str)]) -> Result<()> {
+    let vars: Vec<(&str, &str)> = KEY_VARS.iter().chain(vars).copied().collect();
+    let before = run("cache-key", dir, &vars)?;
+    fs::write(dir.path().join("work").join(file), "changed\n")?;
+    let after = run("cache-key", dir, &vars)?;
+    assert_eq!(changes, key(&before) != key(&after), "changing {file}");
+    Ok(())
+}
+
+#[test]
+fn cache_key_covers_rust_toolchain_toml() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    workspace(
+        &dir,
+        &[("dev.yaml", "name: demo\n"), ("rust-toolchain.toml", "[toolchain]\n")],
+    )?;
+    assert_key_change(&dir, "rust-toolchain.toml", true, &[])
+}
+
+#[test]
+fn cache_key_ignores_language_manifests() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    workspace(&dir, &[("dev.yaml", "name: demo\n"), ("Cargo.toml", "[package]\n")])?;
+    assert_key_change(&dir, "Cargo.toml", false, &[])
+}
+
+#[test]
+fn cache_key_covers_cache_key_files() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    workspace(
+        &dir,
+        &[
+            ("dev.yaml", "name: demo\n"),
+            ("a/b/go.sum", "x\n"),
+            (".tool-versions", "y\n"),
+        ],
+    )?;
+    let files = [("INPUT_CACHE_KEY_FILES", "  **/go.sum\n.tool-versions\n\n")];
+    assert_key_change(&dir, "a/b/go.sum", true, &files)?;
+    assert_key_change(&dir, ".tool-versions", true, &files)
+}
+
+#[test]
+fn cache_key_fails_on_a_glob_that_matches_nothing() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
+    let vars: Vec<(&str, &str)> = KEY_VARS
+        .iter()
+        .chain(&[("INPUT_CACHE_KEY_FILES", "nope/*.lock")])
+        .copied()
+        .collect();
+    let r = run("cache-key", &dir, &vars)?;
+    assert_failed(&r, "cache-key-files pattern 'nope/*.lock' matched no tracked files");
+    Ok(())
+}
+
+#[test]
+fn cache_key_fails_without_a_dev_yaml() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let work = workspace(&dir, &[])?;
+    let r = run("cache-key", &dir, KEY_VARS)?;
+    // The script prints the real path; on macOS the temp dir is behind a
+    // symlink (/var -> /private/var).
+    assert_failed(&r, &format!("no dev.yaml at {}", fs::canonicalize(&work)?.display()));
+    Ok(())
+}
