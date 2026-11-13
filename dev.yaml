@@ -69,7 +69,7 @@ commands:
 
   lint:shell:
     desc: Lint the shell scripts
-    run: shellcheck share/shell install.sh
+    run: shellcheck share/shell install.sh share/action/dev-action.sh
 
   lint:fix:
     desc: Run clippy and auto-fix where possible
