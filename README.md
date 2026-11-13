@@ -252,6 +252,85 @@ installer.
 - The last background run's output is in `~/.local/state/dev/update.log` (or `$XDG_STATE_HOME/dev`), for when one
   fails.
 
+## GitHub Actions
+
+This repo is also a GitHub action. Put it right after checkout, and later steps have everything in your `dev.yaml`:
+
+```yaml
+steps:
+  - uses: actions/checkout@<sha> # v7.0.1
+  - uses: pseudomuto/dev@<sha> # v0.2.0
+  - run: dev test
+```
+
+It installs dev, runs `dev up` from the root of the checkout, and puts the tools it installed on `PATH`, so plain
+`run:` steps like `cargo test` or `jq` work too. Pin it to a commit SHA, as above, or to a release tag: either way it
+installs the matching dev release. Dependabot and Renovate can keep the pin up to date. On Linux and macOS only.
+
+| Input             | Default | What it does                                                                         |
+| ----------------- | ------- | ------------------------------------------------------------------------------------ |
+| `version`         |         | dev version to install, e.g. `0.2.0`. Needed when the action is used at a branch.     |
+| `cache`           | `true`  | Set to `false` to skip the cache.                                                    |
+| `cache-key-files` |         | Extra files whose changes should refresh the cache, one glob per line.               |
+| `export-env`      | `false` | Also export `dev.yaml`'s `env` to later steps (see below).                            |
+
+| Output      | What it is                                    |
+| ----------- | --------------------------------------------- |
+| `version`   | The dev version installed.                    |
+| `cache-hit` | `true` when the cache key matched exactly.    |
+
+### Caching
+
+The action caches what `dev up` installs: Rust toolchains, mise tools, and brew packages. The cache refreshes when
+`dev.yaml`, `rust-toolchain.toml`, or a `cache-key-files` match changes; otherwise `dev up` only installs what's
+missing. A few things to know:
+
+- **It doesn't cache your project's dependencies or build output** (`~/.cargo/registry`, `target/`, `node_modules`).
+  Keep using your language's cache action for those, after this one:
+
+  ```yaml
+  - uses: pseudomuto/dev@<sha> # v0.2.0
+  - uses: Swatinem/rust-cache@<sha> # v2.9.3
+  - run: dev test
+  ```
+
+- **Pin versions in `dev.yaml`.** With `latest` or `lts`, a new upstream release is downloaded on every run until
+  `dev.yaml` changes, since the cache can't tell it's new.
+- **Old Rust toolchains stay in the cache** after you move to a new one. If it gets big, change `cache-key-files` (or
+  anything else in the key) to start a fresh one. Unused mise tool versions are dropped automatically.
+
+### Env in CI
+
+`dev <name>` always applies `dev.yaml`'s `env`, so `run: dev test` gets it with no setup. For steps that run tools
+directly, set `export-env: true` and the vars are exported to every later step, with values as of the action's step.
+
+To use a different value in CI, give the var a default in `dev.yaml` with `${VAR:-default}`, and set it in the job:
+
+```yaml
+# dev.yaml
+env:
+  DATABASE_URL: "${DATABASE_URL:-postgres://localhost/my_app}"
+```
+
+```yaml
+# .github/workflows/ci.yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/my_app
+    steps:
+      - uses: actions/checkout@<sha> # v7.0.1
+      - uses: pseudomuto/dev@<sha> # v0.2.0
+      - run: dev test # uses the job's DATABASE_URL
+```
+
 ## How env is loaded
 
 With the shell setup loaded, your shell picks up `env` from every `dev.yaml` that applies to the current directory,
