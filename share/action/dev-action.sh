@@ -128,7 +128,8 @@ cache_key() {
   [ -f dev.yaml ] || die "no dev.yaml at $(pwd); the action runs \`dev up\` from the root of the checkout"
 
   list=$(mktemp)
-  trap 'rm -f "$list"' EXIT
+  lines=$(mktemp)
+  trap 'rm -f "$list" "$list.sorted" "$lines"' EXIT
   echo dev.yaml >>"$list"
   if [ -f rust-toolchain.toml ]; then
     echo rust-toolchain.toml >>"$list"
@@ -138,16 +139,21 @@ cache_key() {
     pattern=$(printf '%s' "$pattern" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     [ -n "$pattern" ] || continue
     # `:(glob)` makes `**/go.sum` match at any depth, like hashFiles.
-    matches=$(git ls-files -- ":(glob)$pattern") ||
+    # Unquoted, so names like café.lock come out as they are.
+    matches=$(git -c core.quotePath=false ls-files -- ":(glob)$pattern") ||
       die "couldn't list the files matching cache-key-files pattern '$pattern'; is $(pwd) a git checkout?"
     [ -n "$matches" ] || die "cache-key-files pattern '$pattern' matched no tracked files"
     printf '%s\n' "$matches" >>"$list"
   done
 
-  # A line per file, path included, so a rename changes the key too.
-  hash=$(sort -u "$list" | while IFS= read -r file; do
-    printf '%s  %s\n' "$(sha256 <"$file")" "$file"
-  done | sha256)
+  # A line per file, path included, so a rename changes the key too. Not in
+  # a pipeline, so a file that can't be read stops the script.
+  sort -u "$list" >"$list.sorted"
+  while IFS= read -r file; do
+    sum=$(sha256 <"$file") || die "couldn't read $file to build the cache key"
+    printf '%s  %s\n' "$sum" "$file" >>"$lines"
+  done <"$list.sorted"
+  hash=$(sha256 <"$lines")
 
   os=$(printf '%s' "${DEV_ACTION_OS:?}" | tr '[:upper:]' '[:lower:]')
   arch=$(printf '%s' "${DEV_ACTION_ARCH:?}" | tr '[:upper:]' '[:lower:]')
@@ -179,17 +185,15 @@ path() {
   shell_dir="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell"
   shims="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims"
 
-  # Highest priority first, one per line, duplicates dropped.
-  dirs=$(
-    {
-      if [ -d "$shims" ]; then
-        echo "$shims"
-      fi
-      added_by "$shell_dir/rustup"
-      added_by "$shell_dir/zerobrew"
-      echo "$HOME/.local/bin"
-    } | awk '!seen[$0]++'
-  )
+  # Plain assignments, not part of a pipeline, so a failure stops the script.
+  rustup=$(added_by "$shell_dir/rustup")
+  zerobrew=$(added_by "$shell_dir/zerobrew")
+  if [ ! -d "$shims" ]; then
+    shims=
+  fi
+
+  # Highest priority first, one per line, blanks and duplicates dropped.
+  dirs=$(printf '%s\n' "$shims" "$rustup" "$zerobrew" "$HOME/.local/bin" | awk 'length && !seen[$0]++')
 
   add_to_path "$dirs"
 }

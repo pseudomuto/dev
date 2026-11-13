@@ -496,3 +496,20 @@ fn path_exports_the_vars_a_tool_setup_sets() -> Result<()> {
     assert_eq!(format!("{home}/.local/bin\n{home}/zb/bin\n"), r.path);
     Ok(())
 }
+
+#[test]
+fn path_fails_when_a_tool_setup_fails() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    home_file(&dir, ".local/share/dev/shell/rustup", "exit 3\n")?;
+    let r = run("path", &dir, &[])?;
+    assert!(!r.status.success(), "expected a failure, got PATH: {}", r.path);
+    assert!(r.stderr.contains("couldn't load the shell setup in"), "{}", r.stderr);
+    Ok(())
+}
+
+#[test]
+fn cache_key_covers_files_with_non_ascii_names() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    workspace(&dir, &[("dev.yaml", "name: demo\n"), ("café.lock", "x\n")])?;
+    assert_key_change(&dir, "café.lock", true, &[("INPUT_CACHE_KEY_FILES", "*.lock")])
+}
