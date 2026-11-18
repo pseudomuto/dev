@@ -31,6 +31,32 @@ pub const PROJECT_CONFIG: &str = ".dev/mise.toml";
 /// `share/action/dev-action.sh`.
 pub const CONFIG_FILENAME_VAR: &str = "MISE_DEFAULT_CONFIG_FILENAME";
 
+/// A tool for mise: its name, version, and options, e.g. `aws` at `2.37`
+/// with `symlink_bins = "true"`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub version: String,
+    /// Passed to mise as is, in order. mise reads option values as strings.
+    pub options: Vec<(String, String)>,
+}
+
+impl ToolSpec {
+    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            version: version.into(),
+            options: Vec::new(),
+        }
+    }
+
+    /// Adds option `key` with `value`.
+    pub fn with_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.options.push((key.into(), value.into()));
+        self
+    }
+}
+
 /// Installs mise and a set of tools with it.
 ///
 /// The tools are written to one of dev's own mise configs (see [`Config`]).
@@ -41,27 +67,25 @@ pub struct Mise {
 }
 
 impl Mise {
-    /// Creates a dependency that installs mise, writes `tools` (name and
-    /// version, e.g. `("node", "lts")`) to dev's global mise config, then
-    /// installs each tool in order. See [`Config::global`].
-    pub fn global(tools: impl IntoIterator<Item = (String, String)>) -> Self {
-        let tools: Vec<(String, String)> = tools.into_iter().collect();
+    /// Creates a dependency that installs mise, writes `tools` to dev's
+    /// global mise config, then installs each tool in order. See
+    /// [`Config::global`].
+    pub fn global(tools: Vec<ToolSpec>) -> Self {
         Self::with_config(Config::global(tools.clone()), tools)
     }
 
     /// Like [`Mise::global`], but for the project in `root`. See
     /// [`Config::project`].
-    pub fn project(root: impl Into<PathBuf>, tools: impl IntoIterator<Item = (String, String)>) -> Self {
-        let tools: Vec<(String, String)> = tools.into_iter().collect();
+    pub fn project(root: impl Into<PathBuf>, tools: Vec<ToolSpec>) -> Self {
         Self::with_config(Config::project(root, tools.clone()), tools)
     }
 
-    fn with_config(config: Config, tools: Vec<(String, String)>) -> Self {
+    fn with_config(config: Config, tools: Vec<ToolSpec>) -> Self {
         let mut tasks: Vec<Box<dyn Task>> = vec![Box::new(Binary::default()), Box::new(config)];
         tasks.extend(
             tools
                 .into_iter()
-                .map(|(name, version)| Box::new(Tool::new(name, version)) as Box<dyn Task>),
+                .map(|t| Box::new(Tool::new(t.name, t.version).with_options(t.options)) as Box<dyn Task>),
         );
         Self::with_tasks(tasks)
     }
@@ -339,10 +363,15 @@ const PROJECT_HEADER: &str = "# Written by `dev up` from this project's dev.yaml
 ///   so mise loads it everywhere. The user's own global config wins when both
 ///   pin the same tool.
 /// - [`Config::project`]: `<project>/.dev/mise.toml`, which mise only loads in
-///   that project, through [`CONFIG_FILENAME_VAR`] in the project's env.
+///   that project, through [`CONFIG_FILENAME_VAR`] in the project's env. mise
+///   only loads a project file with tool options once it's trusted, so dev
+///   trusts it then: `dev up` installs with those options anyway.
 pub struct Config {
-    /// Name and version, e.g. `("node", "lts")`.
-    tools: Vec<(String, String)>,
+    tools: Vec<ToolSpec>,
+    /// `None` means the mise [`Binary`] finds, resolved when needed.
+    mise: Option<PathBuf>,
+    /// Whether to `mise trust` the file when a tool has options.
+    trust_options: bool,
     /// `None` means `$XDG_CONFIG_HOME/dev/mise.toml` (`~/.config/dev/...`).
     file: Option<PathBuf>,
     link: Link,
@@ -361,9 +390,12 @@ enum Link {
 
 impl Config {
     /// dev's global config, linked into mise's `conf.d`.
-    pub fn global(tools: Vec<(String, String)>) -> Self {
+    pub fn global(tools: Vec<ToolSpec>) -> Self {
         Self {
             tools,
+            mise: None,
+            // mise trusts its own conf.d.
+            trust_options: false,
             file: None,
             link: Link::Default,
             header: GLOBAL_HEADER,
@@ -371,9 +403,11 @@ impl Config {
     }
 
     /// The config for the project in `root`, at `<root>/.dev/mise.toml`.
-    pub fn project(root: impl Into<PathBuf>, tools: Vec<(String, String)>) -> Self {
+    pub fn project(root: impl Into<PathBuf>, tools: Vec<ToolSpec>) -> Self {
         Self {
             tools,
+            mise: None,
+            trust_options: true,
             file: Some(root.into().join(PROJECT_CONFIG)),
             link: Link::None,
             header: PROJECT_HEADER,
@@ -384,6 +418,19 @@ impl Config {
     pub fn with_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.file = Some(path.into());
         self
+    }
+
+    /// Uses the mise at `path` instead of the one [`Binary`] finds.
+    pub fn with_mise(mut self, path: impl Into<PathBuf>) -> Self {
+        self.mise = Some(path.into());
+        self
+    }
+
+    fn mise(&self) -> crate::Result<PathBuf> {
+        match &self.mise {
+            Some(path) => Ok(path.clone()),
+            None => default_mise(),
+        }
     }
 
     /// Links the config from `path` instead of the default.
@@ -410,8 +457,18 @@ impl Config {
     /// What the file should hold.
     fn contents(&self) -> String {
         let mut out = format!("{}[tools]\n", self.header);
-        for (name, version) in &self.tools {
-            out.push_str(&format!("{} = {}\n", toml_string(name), toml_string(version)));
+        for tool in &self.tools {
+            let value = if tool.options.is_empty() {
+                toml_string(&tool.version)
+            } else {
+                let options: String = tool
+                    .options
+                    .iter()
+                    .map(|(key, value)| format!(", {} = {}", toml_string(key), toml_string(value)))
+                    .collect();
+                format!("{{ version = {}{options} }}", toml_string(&tool.version))
+            };
+            out.push_str(&format!("{} = {value}\n", toml_string(&tool.name)));
         }
         out
     }
@@ -448,7 +505,10 @@ impl Task for Config {
     /// Links the config into mise's `conf.d` (global only), then replaces it
     /// with one holding exactly the tools. The new file is written next to
     /// the old one and renamed into place, so mise never reads half of it.
-    fn apply(&self, _ctx: &mut crate::Context) -> crate::Result<()> {
+    ///
+    /// A project's file with tool options is then trusted with `mise trust`,
+    /// whose output goes to `ctx.log`.
+    fn apply(&self, ctx: &mut crate::Context) -> crate::Result<()> {
         let file = self.file()?;
         let dir = file
             .parent()
@@ -465,6 +525,15 @@ impl Task for Config {
             .wrap_err_with(|| format!("failed to write {}", tmp.path().display()))?;
         tmp.persist(&file)
             .wrap_err_with(|| format!("failed to replace {}", file.display()))?;
+
+        if self.trust_options && self.tools.iter().any(|t| !t.options.is_empty()) {
+            // mise runs from `/`, where a relative path means something else.
+            let file = fs::canonicalize(&file).wrap_err_with(|| format!("failed to resolve {}", file.display()))?;
+            let mise = self.mise()?;
+            let mut cmd = mise_command(ctx, &mise);
+            process::run(ctx, cmd.arg("trust").arg(&file))
+                .wrap_err_with(|| format!("`{} trust {}` failed", mise.display(), file.display()))?;
+        }
         Ok(())
     }
 
@@ -488,22 +557,41 @@ impl Task for Config {
 
 /// Installs one tool version with mise, e.g. `node@lts`.
 pub struct Tool {
-    /// `<name>@<version>`, as mise takes it.
-    spec: String,
+    /// The tool's name, e.g. `node`.
+    tool: String,
+    version: String,
     /// Shown as the task name, e.g. `Installing node@lts`.
     label: String,
+    /// `<name>@<version>`, or `<name>[k=v,...]@<version>` with options, as
+    /// mise takes it.
+    spec: String,
     /// `None` means the mise [`Binary`] finds, resolved when needed.
     mise: Option<PathBuf>,
 }
 
 impl Tool {
-    pub fn new(name: impl AsRef<str>, version: impl AsRef<str>) -> Self {
-        let spec = format!("{}@{}", name.as_ref(), version.as_ref());
+    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        let (tool, version) = (name.into(), version.into());
+        let spec = format!("{tool}@{version}");
         Self {
+            tool,
+            version,
             label: format!("Installing {spec}"),
             spec,
             mise: None,
         }
+    }
+
+    /// Installs with `options` (key and value), which mise needs when the
+    /// tool is installed, not only when it's used: dev installs from `/`,
+    /// where a project's own config isn't loaded. The label stays as is.
+    pub fn with_options(mut self, options: Vec<(String, String)>) -> Self {
+        if options.is_empty() {
+            return self;
+        }
+        let options: Vec<String> = options.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        self.spec = format!("{}[{}]@{}", self.tool, options.join(","), self.version);
+        self
     }
 
     /// Uses the mise at `path` instead of the one [`Binary`] finds.

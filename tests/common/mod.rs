@@ -176,6 +176,7 @@ pub fn project(deps: Vec<FakeDep>) -> Project {
         env: Vec::new(),
         commands: Default::default(),
         deps: deps.into_iter().map(|d| Box::new(d) as Box<dyn Dependency>).collect(),
+        tools: Vec::new(),
     }
 }
 

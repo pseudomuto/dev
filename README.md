@@ -158,6 +158,18 @@ deps:
   tools apply inside the project and nowhere else. Your own mise configs are never changed. In the project, dev's file
   wins over its `mise.toml`, and loses to `.mise.toml` and `mise.local.toml`.
 
+  To pass [tool options](https://mise.jdx.dev/dev-tools/#tool-options), use a map with a `version`:
+
+  ```yaml
+  deps:
+    aws: { version: "2.37", symlink_bins: true }
+  ```
+
+  Option values are plain strings, numbers, or bools, and can't contain `[`, `]`, `,`, or `=`. dev also passes them
+  when installing (`mise install aws[symlink_bins=true]@2.37`), for options that change how a tool is installed.
+  mise only loads a project's config with options once it's trusted, so `dev up` runs `mise trust` on
+  `.dev/mise.toml` then; it installs with those options anyway.
+
   dev rewrites `.dev/mise.toml` on every `dev up` to match `dev.yaml`, so don't edit it. That includes `mise use`: in a
   project with no `mise.toml`, it writes to `.dev/mise.toml`, and the next `dev up` drops it. Add a `mise.toml` first,
   or put the tool in `dev.yaml`.

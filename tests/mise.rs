@@ -9,7 +9,7 @@ use dev::{
     deps::{
         Dependency,
         Task,
-        mise::{Binary, Config, Mise, Tool},
+        mise::{Binary, Config, Mise, Tool, ToolSpec},
     },
 };
 use tempfile::{TempDir, tempdir};
@@ -239,8 +239,8 @@ fn binary_is_not_applied_when_setup_points_at_another_mise() -> Result<()> {
     Ok(())
 }
 
-fn tools(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-    pairs.iter().map(|(n, v)| ((*n).into(), (*v).into())).collect()
+fn tools(pairs: &[(&str, &str)]) -> Vec<ToolSpec> {
+    pairs.iter().map(|(n, v)| ToolSpec::new(*n, *v)).collect()
 }
 
 const GLOBAL_HEADER: &str = "# Written by `dev up --global` from your global dev.yaml, and rewritten on every run.\n# Change dev.yaml instead of editing this file.\n";
@@ -327,6 +327,81 @@ fn config_quotes_keys_and_values_for_toml() -> Result<()> {
 }
 
 #[test]
+fn config_writes_options_as_an_inline_table() -> Result<()> {
+    let dir = tempdir()?;
+    let aws = ToolSpec::new("aws", "2.37")
+        .with_option("symlink_bins", "true")
+        .with_option("exe", "aws");
+    let task = Config::project(dir.path(), vec![aws, ToolSpec::new("jq", "1.7")]);
+    task.apply(&mut capturing_ctx().0)?;
+    assert_eq!(
+        format!(
+            "{PROJECT_HEADER}[tools]\n\"aws\" = {{ version = \"2.37\", \"symlink_bins\" = \"true\", \"exe\" = \"aws\" }}\n\"jq\" = \"1.7\"\n"
+        ),
+        fs::read_to_string(dir.path().join(".dev/mise.toml"))?
+    );
+    Ok(())
+}
+
+#[test]
+fn config_trusts_a_project_file_with_options_so_mise_loads_it() -> Result<()> {
+    let dir = tempdir()?;
+    let mise = install_mise(&dir, 0)?;
+    let aws = ToolSpec::new("aws", "2.37").with_option("symlink_bins", "true");
+    let task = Config::project(dir.path(), vec![aws]).with_mise(&mise.path);
+    task.apply(&mut capturing_ctx().0)?;
+
+    // By its real path: on macOS, temp dirs are under a /var symlink.
+    let file = fs::canonicalize(dir.path())?.join(".dev/mise.toml");
+    assert_eq!(vec![format!("/: trust {}", file.display())], mise.calls()?);
+    Ok(())
+}
+
+#[test]
+fn config_trusts_a_relative_project_file_by_its_absolute_path() -> Result<()> {
+    // mise runs from `/`, so a relative path would point somewhere else. A
+    // project loaded from ./dev.yaml has the root `.`; this is the same
+    // thing, relative to the test's working dir, without changing it.
+    let dir = tempdir()?;
+    let cwd = std::env::current_dir()?;
+    let up = "../".repeat(cwd.components().count() - 1);
+    let abs = fs::canonicalize(dir.path())?;
+    let root = PathBuf::from(up).join(abs.strip_prefix("/")?);
+    assert!(root.is_relative());
+
+    let mise = install_mise(&dir, 0)?;
+    let aws = ToolSpec::new("aws", "2.37").with_option("symlink_bins", "true");
+    Config::project(&root, vec![aws])
+        .with_mise(&mise.path)
+        .apply(&mut capturing_ctx().0)?;
+
+    assert_eq!(
+        vec![format!("/: trust {}", abs.join(".dev/mise.toml").display())],
+        mise.calls()?
+    );
+    Ok(())
+}
+
+#[test]
+fn config_trusts_nothing_without_options_or_for_the_global_file() -> Result<()> {
+    let dir = tempdir()?;
+    let mise = install_mise(&dir, 0)?;
+    let mut ctx = capturing_ctx().0;
+    Config::project(dir.path(), tools(&[("jq", "1.7")]))
+        .with_mise(&mise.path)
+        .apply(&mut ctx)?;
+    let aws = ToolSpec::new("aws", "2.37").with_option("symlink_bins", "true");
+    Config::global(vec![aws])
+        .with_mise(&mise.path)
+        .with_file(dir.path().join("dev/mise.toml"))
+        .with_link(dir.path().join("config/mise/conf.d/dev.toml"))
+        .apply(&mut ctx)?;
+
+    assert_eq!(Vec::<String>::new(), mise.calls()?);
+    Ok(())
+}
+
+#[test]
 fn config_will_not_replace_a_file_it_did_not_link() -> Result<()> {
     let dir = tempdir()?;
     let (file, link) = (
@@ -398,6 +473,31 @@ fn tool_is_applied_when_mise_has_nothing_to_install() -> Result<()> {
     assert_eq!("Installing node@lts", tool.name());
     assert!(tool.is_applied(&mut capturing_ctx().0)?);
     assert_eq!(vec!["/: install --dry-run-code node@lts"], mise.calls()?);
+    Ok(())
+}
+
+#[test]
+fn tool_installs_with_its_options() -> Result<()> {
+    let dir = tempdir()?;
+    let mise = install_mise(&dir, 1)?;
+    let tool = Tool::new("aws", "2.37")
+        .with_options(vec![
+            ("symlink_bins".to_string(), "true".to_string()),
+            ("exe".to_string(), "aws".to_string()),
+        ])
+        .with_mise(&mise.path);
+    let mut ctx = capturing_ctx().0;
+
+    assert_eq!("Installing aws@2.37", tool.name(), "options would just be noise");
+    assert!(!tool.is_applied(&mut ctx)?);
+    tool.apply(&mut ctx)?;
+    assert_eq!(
+        vec![
+            "/: install --dry-run-code aws[symlink_bins=true,exe=aws]@2.37",
+            "/: install aws[symlink_bins=true,exe=aws]@2.37",
+        ],
+        mise.calls()?
+    );
     Ok(())
 }
 
