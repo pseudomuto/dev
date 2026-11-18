@@ -1,4 +1,4 @@
-use dev::{Result, commands::Script, project::Project};
+use dev::{Result, commands::Script, deps::mise::ToolSpec, project::Project};
 
 #[test]
 fn from_yaml_parses_name_and_brew_dep() -> Result<()> {
@@ -106,7 +106,10 @@ fn from_yaml_rejects_tools_without_a_version_string() {
         Ok(_) => panic!("expected a list of versions to be rejected"),
         Err(e) => e.to_string(),
     };
-    assert!(msg.starts_with("error: line 3 column 9: "), "unexpected error: {msg}");
+    assert!(
+        msg.starts_with("error: line 3 column 3: invalid type: sequence, expected a version like `lts`"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]
@@ -485,5 +488,86 @@ fn load_global_still_checks_a_name_when_given() -> Result<()> {
 
     let err = Project::load_global(&path).err().expect("an invalid name should fail");
     assert_eq!(format!("invalid project file {}", path.display()), err.to_string());
+    Ok(())
+}
+
+#[test]
+fn from_yaml_parses_tool_options_keeping_values_as_written() -> Result<()> {
+    let yaml = "name: demo\ndeps:\n  aws: { version: 2.30, symlink_bins: true, level: 3.10 }\n  python: 3.10\n";
+    let project = Project::from_yaml(yaml)?;
+    let tasks: Vec<&str> = project.deps[0].tasks().iter().map(|t| t.name()).collect();
+    assert_eq!(
+        vec![
+            "Install mise",
+            "Configure tools",
+            "Installing aws@2.30",
+            "Installing python@3.10"
+        ],
+        tasks
+    );
+
+    assert_eq!(
+        vec![
+            ToolSpec::new("aws", "2.30")
+                .with_option("symlink_bins", "true")
+                .with_option("level", "3.10"),
+            ToolSpec::new("python", "3.10"),
+        ],
+        project.tools
+    );
+    Ok(())
+}
+
+fn tools_error(deps: &str) -> String {
+    match Project::from_yaml(&format!("name: demo\ndeps:\n{deps}")) {
+        Ok(_) => panic!("expected {deps:?} to be rejected"),
+        Err(e) => e.to_string(),
+    }
+}
+
+#[test]
+fn from_yaml_requires_a_version_with_tool_options() {
+    let msg = tools_error("  aws: { symlink_bins: true }\n");
+    assert!(
+        msg.contains("tool `aws` needs a `version` next to its options"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn from_yaml_rejects_tool_options_that_arent_plain_values() {
+    let msg = tools_error("  aws: { version: \"1\", platforms: { linux: x } }\n");
+    assert!(
+        msg.contains("option `platforms` of tool `aws` must be a string, number, or bool"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn from_yaml_rejects_tool_options_mise_cant_take_on_install() {
+    for deps in [
+        "  aws: { version: \"1\", exe: \"a,b\" }\n",
+        "  aws: { version: \"1\", \"a=b\": x }\n",
+        "  aws: { version: \"1\", exe: \"[x]\" }\n",
+    ] {
+        let msg = tools_error(deps);
+        assert!(
+            msg.contains("options of tool `aws` can't contain `[`, `]`, `,`, or `=`"),
+            "unexpected error for {deps:?}: {msg}"
+        );
+    }
+}
+
+#[test]
+fn from_yaml_reads_plain_versions_back_exactly_after_unicode_comments_and_aliases() -> Result<()> {
+    let yaml = "name: demo\nenv:\n  GREETING: \"héllo wörld 👋\"\ndeps:\n  python: 3.10 # the one we test on\n  ruby: &v 3.40\n  aws: { version: *v, level: 1.0 }\n";
+    assert_eq!(
+        vec![
+            ToolSpec::new("python", "3.10"),
+            ToolSpec::new("ruby", "3.40"),
+            ToolSpec::new("aws", "3.40").with_option("level", "1.0"),
+        ],
+        Project::from_yaml(yaml)?.tools
+    );
     Ok(())
 }

@@ -6,6 +6,7 @@ use serde::{
     Deserializer,
     de::{self, MapAccess, Visitor},
 };
+use serde_saphyr::{Location, Spanned};
 
 use crate::{
     Result,
@@ -13,7 +14,7 @@ use crate::{
     deps::{
         Dependency,
         brew::Brew,
-        mise::{self, Mise},
+        mise::{self, Mise, ToolSpec},
         packages::{Eco, Mode, Packages},
         rust::{self, Rust},
     },
@@ -63,6 +64,9 @@ pub struct Project {
     /// When loaded from a file, the project's packages are installed last,
     /// for each ecosystem found next to it, unless `packages` says otherwise.
     pub deps: Vec<Box<dyn Dependency>>,
+    /// The tools under `deps`, as the mise dependency in [`Project::deps`]
+    /// gets them.
+    pub tools: Vec<ToolSpec>,
 }
 
 /// Which kind of `dev.yaml` is being read.
@@ -163,14 +167,19 @@ impl Project {
             .collect::<Result<_>>()?;
 
         let mut deps = raw.deps.deps;
-        if let Some((at, tools)) = raw.deps.tools {
+        let mut tools = Vec::new();
+        if let Some((at, raw_tools)) = raw.deps.tools {
+            tools = raw_tools
+                .into_iter()
+                .map(|tool| tool.resolve(yaml))
+                .collect::<Result<Vec<_>>>()?;
             let mise = match scope {
-                Scope::Global => Mise::global(tools),
+                Scope::Global => Mise::global(tools.clone()),
                 Scope::Project => {
                     let at = mise::PROJECT_CONFIG.to_string();
                     let i = env.partition_point(|(name, _)| name.as_str() < mise::CONFIG_FILENAME_VAR);
                     env.insert(i, (mise::CONFIG_FILENAME_VAR.to_string(), at));
-                    Mise::project(root.unwrap_or(Path::new(".")), tools)
+                    Mise::project(root.unwrap_or(Path::new(".")), tools.clone())
                 }
             };
             deps.insert(at, Box::new(mise));
@@ -196,6 +205,7 @@ impl Project {
             env,
             commands: raw.commands,
             deps,
+            tools,
         })
     }
 }
@@ -219,9 +229,8 @@ struct RawProject {
 #[derive(Default)]
 struct Deps {
     deps: Vec<Box<dyn Dependency>>,
-    /// The tools (name and version), and the index in `deps` their one
-    /// dependency goes at.
-    tools: Option<(usize, Vec<(String, String)>)>,
+    /// The tools, and the index in `deps` their one dependency goes at.
+    tools: Option<(usize, Vec<RawTool>)>,
     packages: PackagesSetting,
 }
 
@@ -295,7 +304,7 @@ impl<'de> Visitor<'de> for DepsVisitor {
         let mut deps: Vec<Box<dyn Dependency>> = Vec::new();
         // Every key that isn't a built-in dependency is a mise tool. They're
         // all met by one dependency, placed where the first tool appears.
-        let mut tools: Vec<(String, String)> = Vec::new();
+        let mut tools: Vec<RawTool> = Vec::new();
         let mut tools_at = None;
         let mut packages = PackagesSetting::Auto;
         // Whether `packages` came after the first tool, so it moves along
@@ -326,9 +335,9 @@ impl<'de> Visitor<'de> for DepsVisitor {
                     map.next_value_seed(Unsupported(&key))?;
                 }
                 _ => {
-                    let version: String = map.next_value()?;
+                    let value: Spanned<ToolValue> = map.next_value()?;
                     tools_at.get_or_insert(deps.len());
-                    tools.push((key, version));
+                    tools.push(RawTool::new(key, value).map_err(de::Error::custom)?);
                 }
             }
         }
@@ -344,6 +353,209 @@ impl<'de> Visitor<'de> for DepsVisitor {
 
         let tools = tools_at.map(|at| (at, tools));
         Ok(Deps { deps, tools, packages })
+    }
+}
+
+/// A tool as written under `deps`, before plain scalars are read back from
+/// the source. See [`Scalar`].
+struct RawTool {
+    name: String,
+    version: RawScalar,
+    options: Vec<(String, RawScalar)>,
+}
+
+/// A tool's version or option value: as text, or where it is in the source.
+enum RawScalar {
+    Text(String),
+    /// A plain number or bool: its byte offset and length in the source.
+    At(usize, usize),
+}
+
+impl RawTool {
+    fn new(name: String, value: Spanned<ToolValue>) -> std::result::Result<Self, String> {
+        let Spanned { value, defined, .. } = value;
+        let (version, options) = match value {
+            ToolValue::Version(scalar) => (raw(&name, None, scalar, &defined)?, Vec::new()),
+            ToolValue::Options { version, options } => {
+                let version = version.ok_or_else(|| {
+                    format!(
+                        "tool `{name}` needs a `version` next to its options, e.g. `{name}: {{ version: latest, ... }}`"
+                    )
+                })?;
+                let version = raw(&name, None, version.value, &version.defined)?;
+                let options = options
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let scalar = raw(&name, Some(&key), value.value, &value.defined)?;
+                        Ok((key, scalar))
+                    })
+                    .collect::<std::result::Result<_, String>>()?;
+                (version, options)
+            }
+        };
+        Ok(Self { name, version, options })
+    }
+
+    /// The tool, with plain scalars read back from `yaml`, the document it
+    /// was parsed from.
+    fn resolve(self, yaml: &str) -> Result<ToolSpec> {
+        let text = |scalar: RawScalar| match scalar {
+            RawScalar::Text(text) => Ok(text),
+            RawScalar::At(start, len) => yaml
+                .get(start..start + len)
+                .map(str::to_string)
+                .ok_or_else(|| eyre!("tool `{}` has a value dev couldn't find in dev.yaml", self.name)),
+        };
+        let mut tool = ToolSpec::new(self.name.clone(), text(self.version)?);
+        for (key, value) in self.options {
+            let value = text(value)?;
+            // mise takes options as `name[k=v,...]@version` when installing.
+            if [&key, &value].iter().any(|s| s.contains(['[', ']', ',', '='])) {
+                bail!("options of tool `{}` can't contain `[`, `]`, `,`, or `=`", tool.name);
+            }
+            tool = tool.with_option(key, value);
+        }
+        Ok(tool)
+    }
+}
+
+/// `scalar`, defined at `at`, as a [`RawScalar`]. `key` is the option it's
+/// for, or `None` for the version.
+fn raw(name: &str, key: Option<&str>, scalar: Scalar, at: &Location) -> std::result::Result<RawScalar, String> {
+    match scalar {
+        Scalar::Text(text) => Ok(RawScalar::Text(text)),
+        Scalar::Plain => {
+            let span = at.span();
+            match (span.byte_offset(), span.byte_len()) {
+                (Some(start), Some(len)) => Ok(RawScalar::At(start as usize, len as usize)),
+                _ => Err(format!("tool `{name}` has a value dev couldn't find in dev.yaml")),
+            }
+        }
+        Scalar::Nested => match key {
+            Some(key) => Err(format!(
+                "option `{key}` of tool `{name}` must be a string, number, or bool"
+            )),
+            None => Err(format!("the version of tool `{name}` must be a string or number")),
+        },
+    }
+}
+
+/// A tool's value under `deps`: a version, or a map with a version and
+/// options, e.g. `aws: { version: "2.37", symlink_bins: true }`.
+enum ToolValue {
+    Version(Scalar),
+    Options {
+        version: Option<Spanned<Scalar>>,
+        options: Vec<(String, Spanned<Scalar>)>,
+    },
+}
+
+/// One scalar of a [`ToolValue`].
+///
+/// serde_saphyr only says what kind of node a value is by converting it, so
+/// a plain `3.10` arrives as the number 3.1. Those are marked [`Scalar::Plain`]
+/// and read back from the source by their span, so `python: 3.10` means
+/// `3.10`.
+enum Scalar {
+    Text(String),
+    Plain,
+    /// A list or map, which isn't allowed here.
+    Nested,
+}
+
+impl<'de> Deserialize<'de> for ToolValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        deserializer.deserialize_any(ToolValueVisitor)
+    }
+}
+
+struct ToolValueVisitor;
+
+impl<'de> Visitor<'de> for ToolValueVisitor {
+    type Value = ToolValue;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a version like `lts`, or a map like `{ version: \"2.37\", symlink_bins: true }`")
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<ToolValue, E> {
+        Ok(ToolValue::Version(Scalar::Text(v.to_string())))
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<ToolValue, E> {
+        Ok(ToolValue::Version(Scalar::Plain))
+    }
+
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<ToolValue, E> {
+        Ok(ToolValue::Version(Scalar::Plain))
+    }
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<ToolValue, E> {
+        Ok(ToolValue::Version(Scalar::Plain))
+    }
+
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<ToolValue, E> {
+        Ok(ToolValue::Version(Scalar::Plain))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<ToolValue, A::Error> {
+        let mut version = None;
+        let mut options = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let value: Spanned<Scalar> = map.next_value()?;
+            if key == "version" {
+                version = Some(value);
+            } else {
+                options.push((key, value));
+            }
+        }
+        Ok(ToolValue::Options { version, options })
+    }
+}
+
+impl<'de> Deserialize<'de> for Scalar {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        deserializer.deserialize_any(ScalarVisitor)
+    }
+}
+
+struct ScalarVisitor;
+
+impl<'de> Visitor<'de> for ScalarVisitor {
+    type Value = Scalar;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a string, number, or bool")
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Scalar, E> {
+        Ok(Scalar::Text(v.to_string()))
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<Scalar, E> {
+        Ok(Scalar::Plain)
+    }
+
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<Scalar, E> {
+        Ok(Scalar::Plain)
+    }
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<Scalar, E> {
+        Ok(Scalar::Plain)
+    }
+
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<Scalar, E> {
+        Ok(Scalar::Plain)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Scalar, A::Error> {
+        while map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {}
+        Ok(Scalar::Nested)
+    }
+
+    fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Scalar, A::Error> {
+        while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+        Ok(Scalar::Nested)
     }
 }
 
