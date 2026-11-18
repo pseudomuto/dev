@@ -203,6 +203,11 @@ sha256() {
 # rustup's and zerobrew's are read from the setup dev wrote for each, so they
 # can't drift from what a shell gets. mise's setup is `mise activate`, which
 # only changes PATH from a prompt hook, so its shims dir is used instead.
+#
+# A project's tools are in .dev/mise.toml, which mise's shims only find with
+# MISE_DEFAULT_CONFIG_FILENAME set, as dev sets it for `dev <cmd>`. So that
+# goes to $GITHUB_ENV too, when the project has tools. Must match
+# CONFIG_FILENAME_VAR and PROJECT_CONFIG in src/deps/mise.rs.
 path() {
   shell_dir="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell"
   shims="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims"
@@ -218,6 +223,11 @@ path() {
   dirs=$(printf '%s\n' "$shims" "$rustup" "$zerobrew" "$HOME/.local/bin" | awk 'length && !seen[$0]++')
 
   add_to_path "$dirs"
+
+  if [ -f "${GITHUB_WORKSPACE:?}/.dev/mise.toml" ]; then
+    d=$(delimiter)
+    printf 'MISE_DEFAULT_CONFIG_FILENAME<<%s\n.dev/mise.toml\n%s\n' "$d" "$d" >>"$GITHUB_ENV"
+  fi
 }
 
 # Adds the dirs in $1 (one per line, highest priority first) to $GITHUB_PATH.

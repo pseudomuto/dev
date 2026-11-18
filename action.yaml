@@ -130,6 +130,10 @@ runs:
       if: inputs.cache == 'true'
       shell: bash
       working-directory: ${{ github.workspace }}
+      # Without it, mise never sees the project's .dev/mise.toml, so it
+      # finds nothing to prune. See CONFIG_FILENAME_VAR in src/deps/mise.rs.
+      env:
+        MISE_DEFAULT_CONFIG_FILENAME: .dev/mise.toml
       run: |
         PATH="$HOME/.local/bin:$PATH"
         if command -v mise > /dev/null; then

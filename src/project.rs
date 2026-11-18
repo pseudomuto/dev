@@ -13,7 +13,7 @@ use crate::{
     deps::{
         Dependency,
         brew::Brew,
-        mise::Mise,
+        mise::{self, Mise},
         packages::{Eco, Mode, Packages},
         rust::{self, Rust},
     },
@@ -43,21 +43,35 @@ pub type Lookup<'a> = dyn Fn(&str) -> std::result::Result<String, env::VarError>
 ///   python: 3.14
 /// ```
 pub struct Project {
-    /// Lowercase words separated by dashes, e.g. `demo-project`.
+    /// Lowercase words separated by dashes, e.g. `demo-project`. Optional in
+    /// the global file, where it defaults to `global`.
     pub name: String,
     /// Set on every process `dev` runs for this project, sorted by name.
     /// `${NAME}` in a value is replaced with `NAME` from the environment `dev`
     /// started in.
+    ///
+    /// A project with tools also gets [`mise::CONFIG_FILENAME_VAR`], so mise
+    /// loads the project's tools in it.
     pub env: Vec<(String, String)>,
     /// Run by `dev <name>`, by name.
     pub commands: BTreeMap<String, ProjectCommand>,
     /// In the order they appear under `deps`. Keys other than built-in
     /// dependencies (e.g. `brew`) are tools, all installed by one mise
-    /// dependency where the first one appears.
+    /// dependency where the first one appears. A project's tools go to its
+    /// own mise config, the global file's to dev's global one.
     ///
     /// When loaded from a file, the project's packages are installed last,
     /// for each ecosystem found next to it, unless `packages` says otherwise.
     pub deps: Vec<Box<dyn Dependency>>,
+}
+
+/// Which kind of `dev.yaml` is being read.
+#[derive(Clone, Copy, PartialEq)]
+enum Scope {
+    /// A project's, in `root`.
+    Project,
+    /// The user's own, which applies everywhere.
+    Global,
 }
 
 impl Project {
@@ -79,6 +93,24 @@ impl Project {
         Self::from_yaml_at(&yaml, root, lookup).wrap_err_with(|| format!("invalid project file {}", path.display()))
     }
 
+    /// Reads and parses the user's global `dev.yaml` at `path`, expanding env
+    /// values from the process environment.
+    ///
+    /// Unlike a project's, its `name` is optional, packages are never
+    /// detected next to it, and its tools go to dev's global mise config.
+    pub fn load_global(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_global_with(path, &|var| env::var(var))
+    }
+
+    /// Like [`Project::load_global`], but `${VAR}` in env values comes from
+    /// `lookup`.
+    pub fn load_global_with(path: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
+        let path = path.as_ref();
+        let yaml = fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+        Self::parse(&yaml, None, Scope::Global, lookup)
+            .wrap_err_with(|| format!("invalid project file {}", path.display()))
+    }
+
     /// Parses a `dev.yaml` document, expanding env values from the process
     /// environment.
     ///
@@ -95,20 +127,33 @@ impl Project {
     /// With no project dir to look in, `packages` is checked but adds
     /// nothing; see [`Project::from_yaml_at`].
     pub fn from_yaml_with(yaml: &str, lookup: &Lookup<'_>) -> Result<Self> {
-        Self::parse(yaml, None, lookup)
+        Self::parse(yaml, None, Scope::Project, lookup)
     }
 
     /// Like [`Project::from_yaml_with`], for a `dev.yaml` in `root`, whose
     /// packages are installed as `packages` says.
     pub fn from_yaml_at(yaml: &str, root: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
-        Self::parse(yaml, Some(root.as_ref()), lookup)
+        Self::parse(yaml, Some(root.as_ref()), Scope::Project, lookup)
     }
 
-    fn parse(yaml: &str, root: Option<&Path>, lookup: &Lookup<'_>) -> Result<Self> {
+    /// `root` is the project dir, `None` when there's none to look in. A
+    /// project's tools are still rooted at `.` then, as for `dev.yaml`.
+    fn parse(yaml: &str, root: Option<&Path>, scope: Scope, lookup: &Lookup<'_>) -> Result<Self> {
         let raw: RawProject = serde_saphyr::from_str(yaml)?;
-        validate_name(&raw.name)?;
+        let name = match (raw.name, scope) {
+            (Some(name), _) => name,
+            (None, Scope::Global) => "global".to_string(),
+            (None, Scope::Project) => bail!("`name` is required, e.g. `name: demo-project`"),
+        };
+        validate_name(&name)?;
+        if raw.env.contains_key(mise::CONFIG_FILENAME_VAR) {
+            bail!(
+                "env `{}` is set by dev, so mise finds a project's tools; remove it from dev.yaml",
+                mise::CONFIG_FILENAME_VAR
+            );
+        }
 
-        let env = raw
+        let mut env: Vec<(String, String)> = raw
             .env
             .into_iter()
             .map(|(name, value)| {
@@ -118,7 +163,19 @@ impl Project {
             .collect::<Result<_>>()?;
 
         let mut deps = raw.deps.deps;
-        if let Some(root) = root {
+        if let Some((at, tools)) = raw.deps.tools {
+            let mise = match scope {
+                Scope::Global => Mise::global(tools),
+                Scope::Project => {
+                    let at = mise::PROJECT_CONFIG.to_string();
+                    let i = env.partition_point(|(name, _)| name.as_str() < mise::CONFIG_FILENAME_VAR);
+                    env.insert(i, (mise::CONFIG_FILENAME_VAR.to_string(), at));
+                    Mise::project(root.unwrap_or(Path::new(".")), tools)
+                }
+            };
+            deps.insert(at, Box::new(mise));
+        }
+        if let (Some(root), Scope::Project) = (root, scope) {
             match raw.deps.packages {
                 PackagesSetting::Auto => {
                     let packages = Packages::detect(root, Mode::from_env());
@@ -135,7 +192,7 @@ impl Project {
         }
 
         Ok(Self {
-            name: raw.name,
+            name,
             env,
             commands: raw.commands,
             deps,
@@ -146,7 +203,8 @@ impl Project {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawProject {
-    name: String,
+    #[serde(default)]
+    name: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
@@ -156,10 +214,14 @@ struct RawProject {
 }
 
 /// The `deps` map, turned into dependencies by key as it's read. Packages
-/// need the project dir, so only their setting is kept here.
+/// and tools depend on where the file is, so only their settings are kept
+/// here.
 #[derive(Default)]
 struct Deps {
     deps: Vec<Box<dyn Dependency>>,
+    /// The tools (name and version), and the index in `deps` their one
+    /// dependency goes at.
+    tools: Option<(usize, Vec<(String, String)>)>,
     packages: PackagesSetting,
 }
 
@@ -271,16 +333,17 @@ impl<'de> Visitor<'de> for DepsVisitor {
             }
         }
 
-        if let Some(at) = tools_at {
-            deps.insert(at, Box::new(Mise::new(tools)));
-            if let PackagesSetting::Only { at: packages_at, .. } = &mut packages
-                && packages_after_tools
-            {
-                *packages_at += 1;
-            }
+        // The tools dep goes in first, at `tools_at`, moving a later
+        // `packages` along.
+        if tools_at.is_some()
+            && packages_after_tools
+            && let PackagesSetting::Only { at: packages_at, .. } = &mut packages
+        {
+            *packages_at += 1;
         }
 
-        Ok(Deps { deps, packages })
+        let tools = tools_at.map(|at| (at, tools));
+        Ok(Deps { deps, tools, packages })
     }
 }
 

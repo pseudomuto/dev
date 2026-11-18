@@ -65,7 +65,17 @@ __dev_hook() {
 
   # Prints nothing when the env is already current. On failure it prints its
   # error and no script, so the env stays as it was.
-  __dev_env=$(command dev hook-env) && eval "$__dev_env"
+  if __dev_env=$(command dev hook-env) && [ -n "$__dev_env" ]; then
+    eval "$__dev_env"
+
+    # mise's own hooks already ran for this `cd` with the env from before,
+    # and its next prompt hook can skip the update, so a project's tools
+    # (MISE_DEFAULT_CONFIG_FILENAME) would show up a prompt late. Bring mise
+    # up to date now. `mise activate` sets MISE_SHELL; `deactivate` unsets it.
+    case "${MISE_SHELL:-}" in
+      bash | zsh) eval "$(command mise hook-env -s "$MISE_SHELL" --force)" ;;
+    esac
+  fi
 
   unset __dev_stamp __dev_stamp_file __dev_env
   return "$1"

@@ -491,3 +491,40 @@ fn new_fails_when_the_dir_exists() -> Result<()> {
     assert!(!dir.path().join("demo/.git").exists(), "git init ran anyway");
     Ok(())
 }
+
+#[test]
+fn up_global_fails_without_a_global_dev_yaml() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let output = dev(&dir, &["up", "--global"])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(Some(1), output.status.code(), "stderr: {stderr}");
+    let path = dir.path().join("home/.config/dev.yaml");
+    assert!(
+        stderr.contains(&format!("failed to read {}", path.display())),
+        "stderr: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "nothing should be applied");
+    Ok(())
+}
+
+#[test]
+fn up_global_reads_only_the_global_dev_yaml_and_logs_to_the_state_dir() -> Result<()> {
+    // Invalid, so reading it would fail.
+    let dir = project_dir("name: demo\ndeps:\n  custom: []\n")?;
+    let config = dir.path().join("home/.config");
+    std::fs::create_dir_all(&config)?;
+    // No deps, so nothing gets installed.
+    std::fs::write(config.join("dev.yaml"), "env:\n  A: a\n")?;
+
+    let output = dev(&dir, &["up", "--global"])?;
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(dir.path().join("home/.local/state/dev/log/latest").is_file());
+    assert!(!dir.path().join(".dev").exists(), "the project dir is left alone");
+    Ok(())
+}

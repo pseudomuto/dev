@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     io::{self, IsTerminal},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
@@ -33,7 +33,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Meet every dependency in ./dev.yaml
-    Up,
+    Up {
+        /// Meet the ones in your global dev.yaml
+        /// (${XDG_CONFIG_HOME:-~/.config}/dev.yaml) instead. Its tools are
+        /// set for every dir, unlike a project's
+        #[arg(long)]
+        global: bool,
+    },
     /// Create ./<NAME> from a template, then git init it and run dev up in it
     New {
         /// The project's name: lowercase words separated by dashes
@@ -115,7 +121,18 @@ async fn main() -> Result<()> {
 
     print_update_notice();
 
+    // The dev.yaml this run reads, and where its logs go when it isn't the
+    // project's `.dev/log`.
+    let (file, logs) = match cli.command {
+        Command::Up { global: true } => (
+            shell::config_home()?.join(PROJECT_FILE),
+            Some(shell::state_home()?.join("dev/log")),
+        ),
+        _ => (PathBuf::from(PROJECT_FILE), None),
+    };
+
     let project = match cli.command {
+        Command::Up { global: true } => Project::load_global(&file)?,
         // The shell's `$PWD` is still the parent dir, but `${PWD}` in
         // dev.yaml must be the new project's.
         Command::New { .. } => {
@@ -133,7 +150,7 @@ async fn main() -> Result<()> {
     // A shell that already loaded this dev.yaml has its env, so expanding it
     // again would apply it twice, e.g. `${PWD}/bin` twice on PATH.
     let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
-    let env = if shell::env::applied(&vars, &cwd.join(PROJECT_FILE))? {
+    let env = if shell::env::applied(&vars, &cwd.join(&file))? {
         Vec::new()
     } else {
         project.env.clone()
@@ -147,9 +164,13 @@ async fn main() -> Result<()> {
         Command::ShellInit | Command::HookEnv | Command::SelfUpdate { .. } => {
             unreachable!("handled before loading dev.yaml")
         }
-        Command::Up => with_run_log(&mut ctx, "up", &project.name, |ctx| dev::up(ctx, &project))?,
+        Command::Up { .. } => with_run_log(&mut ctx, logs.as_deref(), "up", &project.name, |ctx| {
+            dev::up(ctx, &project)
+        })?,
         Command::New { name, .. } => {
-            let up = with_run_log(&mut ctx, "up", &project.name, |ctx| dev::up(ctx, &project));
+            let up = with_run_log(&mut ctx, logs.as_deref(), "up", &project.name, |ctx| {
+                dev::up(ctx, &project)
+            });
             if up.is_ok() {
                 println!("\nCreated {name}. Next: cd {name}");
             }
@@ -159,7 +180,9 @@ async fn main() -> Result<()> {
             }
             up.with_note(|| format!("{name} was created; run `dev up` in it to try again"))?;
         }
-        Command::Down => with_run_log(&mut ctx, "down", &project.name, |ctx| dev::down(ctx, &project))?,
+        Command::Down => with_run_log(&mut ctx, logs.as_deref(), "down", &project.name, |ctx| {
+            dev::down(ctx, &project)
+        })?,
         Command::Project(args) => {
             let (name, args) = args.split_first().expect("clap passes the command name first");
             let code = dev::run_command(&ctx, &project, name, args)?;
@@ -249,15 +272,19 @@ fn project_commands_help(cmd: &clap::Command, loaded: &Result<Project>) -> Optio
 
 /// Runs `f` (the `command` run, e.g. `up`, for `project`) with progress
 /// going to a [`reporter`] and the output of the commands it runs going to a
-/// new log in `./.dev/log` (next to dev.yaml). A failure says where that log
-/// is.
+/// new log in `logs`, or in `./.dev/log` (next to dev.yaml) when that's
+/// `None`. A failure says where that log is.
 fn with_run_log(
     ctx: &mut Context,
+    logs: Option<&Path>,
     command: &str,
     project: &str,
     f: impl FnOnce(&mut Context) -> Result<()>,
 ) -> Result<()> {
-    let log = RunLog::create(Path::new("."), command, run_log::KEEP)?;
+    let log = match logs {
+        Some(dir) => RunLog::create_in(dir, command, run_log::KEEP)?,
+        None => RunLog::create(Path::new("."), command, run_log::KEEP)?,
+    };
     ctx.log = Box::new(log.file);
     ctx.reporter = reporter()?;
 
