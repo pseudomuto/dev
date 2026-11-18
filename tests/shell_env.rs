@@ -299,3 +299,123 @@ fn share_shell_loads_and_unloads_project_env() -> Result<()> {
     assert_eq!(expected, String::from_utf8_lossy(&output.stdout), "stderr: {stderr}");
     Ok(())
 }
+
+#[test]
+fn the_global_dev_yaml_needs_no_name() -> Result<()> {
+    let mut sh = Shell::new()?;
+    sh.project(".config", "env:\n  WHO: global\n")?;
+
+    sh.cd(&sh.path("anywhere"))?;
+    assert_eq!(Some("global"), sh.get("WHO"));
+    Ok(())
+}
+
+#[test]
+fn the_global_dev_yaml_is_never_a_project_layer_too() -> Result<()> {
+    let mut sh = Shell::new()?;
+    sh.project(".config", "env:\n  PATH: \"${PWD}/bin:${PATH}\"\n")?;
+    let home = sh.home.path().to_path_buf();
+
+    sh.cd(&sh.path(".config/nvim"))?;
+    assert_eq!(
+        Some(format!("{}/bin:/usr/bin:/bin", path_str(&home)).as_str()),
+        sh.get("PATH"),
+        "applied once, as the global layer"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_project_with_tools_points_mise_at_its_config_only_inside_it() -> Result<()> {
+    let mut sh = Shell::new()?;
+    sh.project(".config", "deps:\n  jq: \"1.7\"\n")?;
+    sh.project("proj", "name: proj\ndeps:\n  node: lts\n")?;
+
+    sh.cd(&sh.path("elsewhere"))?;
+    assert_eq!(None, sh.get("MISE_DEFAULT_CONFIG_FILENAME"), "global tools need no var");
+
+    sh.cd(&sh.path("proj/src"))?;
+    assert_eq!(Some(".dev/mise.toml"), sh.get("MISE_DEFAULT_CONFIG_FILENAME"));
+
+    let home = sh.home.path().to_path_buf();
+    sh.cd(&home)?;
+    assert_eq!(None, sh.get("MISE_DEFAULT_CONFIG_FILENAME"));
+    Ok(())
+}
+
+/// Runs `script` in bash with `share/shell` loaded (as `$1`), in `$HOME`,
+/// with the real `dev` and a fake `mise` first on `PATH`. The fake logs each
+/// call, with the `MISE_DEFAULT_CONFIG_FILENAME` it saw, to `$HOME/calls`.
+/// Returns stdout and the logged calls.
+#[allow(clippy::disallowed_methods)]
+fn bash_with_fake_mise(sh: &Shell, script: &str) -> Result<(String, Vec<String>)> {
+    let fake = sh.path("fake");
+    fs::create_dir_all(&fake)?;
+    let calls = sh.path("calls");
+    let body = format!(
+        "#!/bin/sh\necho \"$* var=${{MISE_DEFAULT_CONFIG_FILENAME:-}}\" >> '{}'\n",
+        calls.display()
+    );
+    let mise = fake.join("mise");
+    fs::write(&mise, body)?;
+    fs::set_permissions(&mise, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+
+    let bin = Path::new(env!("CARGO_BIN_EXE_dev")).parent().expect("dev is in a dir");
+    let share = Path::new(env!("CARGO_MANIFEST_DIR")).join("share/shell");
+    let output = Command::new("/bin/bash")
+        .env_clear()
+        .env("HOME", sh.home.path())
+        .env("PWD", sh.home.path())
+        .env("XDG_DATA_HOME", sh.path("data"))
+        .env("DEV_AUTO_UPDATE", "0")
+        .env("PATH", format!("{}:{}:/usr/bin:/bin", fake.display(), bin.display()))
+        .current_dir(sh.home.path())
+        .args(["--norc", "-c", script, "bash"])
+        .arg(&share)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+
+    let calls = match fs::read_to_string(&calls) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        res => res?,
+    };
+    Ok((
+        String::from_utf8(output.stdout)?,
+        calls.lines().map(str::to_string).collect(),
+    ))
+}
+
+#[test]
+fn share_shell_reruns_mises_hook_when_the_env_changes() -> Result<()> {
+    let sh = Shell::new()?;
+    sh.project("proj", "name: proj\ndeps:\n  node: lts\n")?;
+
+    let script = r#"
+        . "$1"
+        export MISE_SHELL=bash
+        cd proj && __dev_hook
+        __dev_hook
+        cd .. && __dev_hook
+    "#;
+    let (_, calls) = bash_with_fake_mise(&sh, script)?;
+    assert_eq!(
+        vec![
+            "hook-env -s bash --force var=.dev/mise.toml".to_string(),
+            "hook-env -s bash --force var=".to_string(),
+        ],
+        calls,
+        "once on the way in and once on the way out, after dev's env, and not when nothing changed"
+    );
+    Ok(())
+}
+
+#[test]
+fn share_shell_leaves_mise_alone_when_it_isnt_activated() -> Result<()> {
+    let sh = Shell::new()?;
+    sh.project("proj", "name: proj\ndeps:\n  node: lts\n")?;
+
+    let (_, calls) = bash_with_fake_mise(&sh, ". \"$1\"\ncd proj && __dev_hook\n")?;
+    assert_eq!(Vec::<String>::new(), calls);
+    Ok(())
+}

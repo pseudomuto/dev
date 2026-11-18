@@ -20,7 +20,8 @@ It's idempotent: `dev up` only does what isn't done yet, so it's safe to run any
 
 - **Packages** from Homebrew formulae, installed with [zerobrew](https://zerobrew.rs). See [deps](#deps).
 - **Tools** like node, python, or go, installed with [mise](https://mise.jdx.dev), without touching your own mise
-  config.
+  config. A project's tools only apply inside it; set global ones with `dev up --global`. See
+  [Global dev.yaml](#global-devyaml).
 - **Rust toolchains** with rustup, straight from `rust-toolchain.toml` or listed by channel.
 - **Project packages** (npm, yarn, pnpm, bun, bundler, go, cargo, uv, poetry) installed when they're out of date, and
   strictly from the lockfile in CI.
@@ -94,14 +95,14 @@ dev test    # runs `cargo test` with the project env
 
 ## dev.yaml
 
-| Key        | Required | What it is                                              |
-| ---------- | -------- | ------------------------------------------------------- |
-| `name`     | yes      | Lowercase words separated by dashes, e.g. `my-app`.     |
-| `env`      | no       | Env vars set for the project's shell and every command. |
-| `deps`     | no       | What `dev up` installs, in order.                       |
-| `commands` | no       | Commands run with `dev <name>`.                         |
+| Key        | Required    | What it is                                              |
+| ---------- | ----------- | ------------------------------------------------------- |
+| `name`     | in projects | Lowercase words separated by dashes, e.g. `my-app`.     |
+| `env`      | no          | Env vars set for the project's shell and every command. |
+| `deps`     | no          | What `dev up` installs, in order.                       |
+| `commands` | no          | Commands run with `dev <name>`.                         |
 
-Unknown keys are an error, so typos don't go unnoticed.
+Unknown keys are an error, so typos don't go unnoticed. The [global dev.yaml](#global-devyaml) needs no `name`.
 
 ### env
 
@@ -152,8 +153,14 @@ deps:
   `dev up` finds `cargo`, e.g. a mise `cargo:` tool.
 
 - Every other key is a [mise](https://mise.jdx.dev) tool and its version. dev installs mise if it isn't already on
-  `PATH`, and adds the tools to its own mise config (`~/.config/dev/mise.toml`), which mise loads alongside yours. Your
-  own global mise config is never changed, and wins when both pin the same tool.
+  `PATH`, and writes the tools to the project's own mise config, `.dev/mise.toml`. The project's env sets
+  `MISE_DEFAULT_CONFIG_FILENAME=.dev/mise.toml`, which makes mise look for that file next to its usual ones, so the
+  tools apply inside the project and nowhere else. Your own mise configs are never changed. In the project, dev's file
+  wins over its `mise.toml`, and loses to `.mise.toml` and `mise.local.toml`.
+
+  dev rewrites `.dev/mise.toml` on every `dev up` to match `dev.yaml`, so don't edit it. That includes `mise use`: in a
+  project with no `mise.toml`, it writes to `.dev/mise.toml`, and the next `dev up` drops it. Add a `mise.toml` first,
+  or put the tool in `dev.yaml`.
 - `packages` controls installing the project's own packages. You usually don't need it: after everything else, dev finds
   these in the project root and installs them when they're out of date:
 
@@ -238,11 +245,35 @@ A long-form command without `flags` or `args` passes its args through as is, lik
 Command names can't match a built-in command (`up`, `down`, `new`, `self-update`, `shell-init`, `hook-env`, `help`).
 Commands always exit with their own status.
 
+### Global dev.yaml
+
+`~/.config/dev.yaml` (or `$XDG_CONFIG_HOME/dev.yaml`) is yours, for what applies everywhere. Its `env` is loaded in
+every shell (see [How env is loaded](#how-env-is-loaded)), and `dev up --global` installs its `deps`, from any
+directory:
+
+```yaml
+env:
+  EDITOR: nvim
+deps:
+  node: "24"
+  go: "1.25"
+  "go:golang.org/x/tools/gopls": latest
+```
+
+It works like a project's `dev.yaml`, except:
+
+- `name` is optional.
+- Tools go to dev's global mise config, `~/.config/dev/mise.toml`, which mise loads everywhere through a link at
+  `~/.config/mise/conf.d/dev.toml`. Your own global mise config wins when both pin the same tool. Like a project's,
+  dev rewrites this file on every `dev up --global` to match `dev.yaml`.
+- Project packages aren't detected next to it, and `commands` aren't run by `dev <name>`.
+
 ## Commands
 
 | Command            | What it does                                                             |
 | ------------------ | ------------------------------------------------------------------------ |
 | `dev up`           | Installs or updates every dependency in `./dev.yaml` that isn't current. |
+| `dev up --global`  | Same, for the [global dev.yaml](#global-devyaml), from any directory.    |
 | `dev down`         | Takes down every dependency, last one first.                             |
 | `dev new <name>`   | Creates a project from a template. See [New projects](#new-projects).    |
 | `dev self-update`  | Installs the latest release, if it's newer.                              |
@@ -267,6 +298,8 @@ less .dev/log/latest
 
 When a step fails, dev shows its last lines of output and where the full log is. `.dev` has its own `.gitignore`, so
 there's nothing to add to yours.
+
+`dev up --global` logs to `~/.local/state/dev/log` (or `$XDG_STATE_HOME/dev/log`) instead.
 
 ## New projects
 

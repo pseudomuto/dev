@@ -56,11 +56,17 @@ pub struct Layer {
     pub root: PathBuf,
     /// Nanoseconds since the epoch. A change means the file was edited.
     pub modified: u64,
+    /// Whether this is the user's global file, read with
+    /// [`Project::load_global_with`]. Defaults to false for state saved by
+    /// older releases, which then differs from the layers found now, so the
+    /// shell just re-renders once.
+    #[serde(default)]
+    pub global: bool,
 }
 
 impl Layer {
     /// The layer for `path`, or `None` if there's no such file.
-    fn find(path: PathBuf, root: PathBuf) -> Result<Option<Self>> {
+    fn find(path: PathBuf, root: PathBuf, global: bool) -> Result<Option<Self>> {
         let meta = match fs::metadata(&path) {
             Ok(meta) => meta,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -74,7 +80,12 @@ impl Layer {
             .as_nanos()
             .try_into()
             .wrap_err_with(|| format!("the mtime of {} doesn't fit in 64 bits", path.display()))?;
-        Ok(Some(Self { path, root, modified }))
+        Ok(Some(Self {
+            path,
+            root,
+            modified,
+            global,
+        }))
     }
 }
 
@@ -111,15 +122,16 @@ pub fn applied(env: &BTreeMap<String, String>, path: &Path) -> Result<bool> {
     else {
         return Ok(false);
     };
-    let now = Layer::find(layer.path.clone(), layer.root.clone())?;
+    let now = Layer::find(layer.path.clone(), layer.root.clone(), layer.global)?;
     Ok(now.as_ref() == Some(layer))
 }
 
 /// The layers that apply in `pwd`, outermost first. `global` is the user's
-/// own `dev.yaml`.
+/// own `dev.yaml`, which is only ever the global layer, even in a dir it's
+/// in (e.g. `~/.config`).
 pub fn layers(pwd: &Path, home: &Path, global: &Path) -> Result<Vec<Layer>> {
     let mut found = Vec::new();
-    if let Some(layer) = Layer::find(global.to_path_buf(), home.to_path_buf())? {
+    if let Some(layer) = Layer::find(global.to_path_buf(), home.to_path_buf(), true)? {
         found.push(layer);
     }
 
@@ -129,7 +141,11 @@ pub fn layers(pwd: &Path, home: &Path, global: &Path) -> Result<Vec<Layer>> {
         vec![pwd]
     };
     for dir in dirs.into_iter().rev() {
-        if let Some(layer) = Layer::find(dir.join(FILE), dir.to_path_buf())? {
+        let path = dir.join(FILE);
+        if path == global {
+            continue;
+        }
+        if let Some(layer) = Layer::find(path, dir.to_path_buf(), false)? {
             found.push(layer);
         }
     }
@@ -165,7 +181,11 @@ pub fn render(env: &BTreeMap<String, String>, state: Option<&State>, layers: Vec
                 .ok_or_else(|| VarError::NotUnicode(layer.root.clone().into_os_string())),
             _ => current.get(var).cloned().ok_or(VarError::NotPresent),
         };
-        let project = Project::load_with(&layer.path, &lookup)?;
+        let project = if layer.global {
+            Project::load_global_with(&layer.path, &lookup)?
+        } else {
+            Project::load_with(&layer.path, &lookup)?
+        };
 
         for (name, value) in project.env {
             if !is_identifier(&name) {

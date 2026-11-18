@@ -1,5 +1,5 @@
 //! Logs of the commands `dev up` and `dev down` run, one file per run, in
-//! `<project>/.dev/log`.
+//! `<project>/.dev/log`, or `$XDG_STATE_HOME/dev/log` for `dev up --global`.
 
 use std::{
     fs::{self, File},
@@ -36,13 +36,19 @@ impl RunLog {
     /// already there, so `.dev` never shows up in git.
     pub fn create(root: &Path, command: &str, keep: usize) -> Result<Self> {
         let dev_dir = root.join(".dev");
-        let dir = dev_dir.join("log");
-        fs::create_dir_all(&dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
+        fs::create_dir_all(&dev_dir).wrap_err_with(|| format!("failed to create {}", dev_dir.display()))?;
 
         let gitignore = dev_dir.join(".gitignore");
         if !gitignore.exists() {
             fs::write(&gitignore, "*\n").wrap_err_with(|| format!("failed to write {}", gitignore.display()))?;
         }
+        Self::create_in(&dev_dir.join("log"), command, keep)
+    }
+
+    /// Like [`RunLog::create`], but with the logs right in `dir`, and no
+    /// `.gitignore`.
+    pub fn create_in(dir: &Path, command: &str, keep: usize) -> Result<Self> {
+        fs::create_dir_all(dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
 
         // Zero-padded, so sorting by name sorts by time. The pid keeps runs
         // that start in the same millisecond apart.
@@ -58,8 +64,8 @@ impl RunLog {
             .open(&path)
             .wrap_err_with(|| format!("failed to create {}", path.display()))?;
 
-        point_latest_at(&dir, &name)?;
-        prune(&dir, keep)?;
+        point_latest_at(dir, &name)?;
+        prune(dir, keep)?;
         Ok(Self { path, file })
     }
 }

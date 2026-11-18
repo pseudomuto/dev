@@ -390,3 +390,100 @@ fn rejects_bad_packages_settings() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn from_yaml_points_mise_at_the_project_config_when_there_are_tools() -> Result<()> {
+    let project = Project::from_yaml("name: demo\nenv:\n  A: a\n  Z: z\ndeps:\n  node: lts\n")?;
+    assert_eq!(
+        vec![
+            ("A".to_string(), "a".to_string()),
+            ("MISE_DEFAULT_CONFIG_FILENAME".to_string(), ".dev/mise.toml".to_string()),
+            ("Z".to_string(), "z".to_string()),
+        ],
+        project.env
+    );
+
+    let project = Project::from_yaml("name: demo\ndeps:\n  brew: [jq]\n")?;
+    assert!(project.env.is_empty(), "no tools, so mise needs no project config");
+    Ok(())
+}
+
+#[test]
+fn from_yaml_rejects_the_mise_config_var_in_env() {
+    let err = Project::from_yaml("name: demo\nenv:\n  MISE_DEFAULT_CONFIG_FILENAME: x.toml\n")
+        .err()
+        .expect("dev owns that var");
+    assert_eq!(
+        "env `MISE_DEFAULT_CONFIG_FILENAME` is set by dev, so mise finds a project's tools; remove it from dev.yaml",
+        err.root_cause().to_string()
+    );
+}
+
+#[test]
+fn load_writes_tools_to_the_project_mise_config() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("dev.yaml");
+    std::fs::write(&path, "name: demo\ndeps:\n  node: lts\n")?;
+
+    let project = Project::load(&path)?;
+    // Guard: a project whose tools are still global would write to the real
+    // ~/.config below.
+    assert!(
+        project.env.iter().any(|(k, _)| k == "MISE_DEFAULT_CONFIG_FILENAME"),
+        "tools should be in project scope"
+    );
+    let config = project.deps[0]
+        .tasks()
+        .iter()
+        .find(|t| t.name() == "Configure tools")
+        .expect("a tools dep configures mise");
+    config.apply(&mut dev::Context::default())?;
+
+    let written = std::fs::read_to_string(dir.path().join(".dev/mise.toml"))?;
+    assert!(written.ends_with("[tools]\n\"node\" = \"lts\"\n"), "got {written:?}");
+    Ok(())
+}
+
+#[test]
+fn load_requires_a_project_name() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("dev.yaml");
+    std::fs::write(&path, "deps:\n  brew: [jq]\n")?;
+
+    let err = Project::load(&path).err().expect("a project needs a name");
+    assert_eq!(
+        "`name` is required, e.g. `name: demo-project`",
+        err.root_cause().to_string()
+    );
+    Ok(())
+}
+
+#[test]
+fn load_global_needs_no_name_and_detects_no_packages() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("dev.yaml");
+    std::fs::write(dir.path().join("package.json"), "{}")?;
+    std::fs::write(&path, "env:\n  A: a\ndeps:\n  node: lts\n")?;
+
+    let project = Project::load_global(&path)?;
+    assert_eq!("global", project.name);
+    assert_eq!(
+        vec![("A".to_string(), "a".to_string())],
+        project.env,
+        "global tools need no var"
+    );
+    let names: Vec<&str> = project.deps.iter().map(|d| d.name()).collect();
+    assert_eq!(vec!["Install tools"], names);
+    Ok(())
+}
+
+#[test]
+fn load_global_still_checks_a_name_when_given() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("dev.yaml");
+    std::fs::write(&path, "name: Mine\n")?;
+
+    let err = Project::load_global(&path).err().expect("an invalid name should fail");
+    assert_eq!(format!("invalid project file {}", path.display()), err.to_string());
+    Ok(())
+}

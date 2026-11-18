@@ -239,40 +239,21 @@ fn binary_is_not_applied_when_setup_points_at_another_mise() -> Result<()> {
     Ok(())
 }
 
-/// A fake `mise` whose `config set --file F K V` stores `K=V` in `F` and
-/// whose `config get --file F K` prints the last value stored for `K`, or
-/// exits 1. Each call's working dir and arguments go to `dir/calls`.
-fn config_mise(dir: &TempDir) -> Result<FakeMise> {
-    let calls = dir.path().join("calls");
-    let body = format!(
-        r#"echo "$(pwd): $*" >> '{calls}'
-[ "$1" = config ] || exit 2
-case "$2" in
-  set) echo "$5=$6" >> "$4" ;;
-  get) line=$(grep -F "$5=" "$4" | tail -n 1); [ -n "$line" ] || exit 1; echo "${{line#*=}}" ;;
-esac"#,
-        calls = calls.display(),
-    );
-    Ok(FakeMise {
-        path: script(dir, "mise", &body)?,
-        calls,
-    })
-}
-
 fn tools(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(n, v)| ((*n).into(), (*v).into())).collect()
 }
 
+const GLOBAL_HEADER: &str = "# Written by `dev up --global` from your global dev.yaml, and rewritten on every run.\n# Change dev.yaml instead of editing this file.\n";
+const PROJECT_HEADER: &str = "# Written by `dev up` from this project's dev.yaml, and rewritten on every run.\n# Change dev.yaml instead of editing this file.\n";
+
 #[test]
-fn config_sets_tools_and_links_the_file_into_conf_d() -> Result<()> {
+fn config_writes_the_tools_and_links_the_file_into_conf_d() -> Result<()> {
     let dir = tempdir()?;
-    let mise = config_mise(&dir)?;
     let (file, link) = (
         dir.path().join("dev/mise.toml"),
         dir.path().join("config/mise/conf.d/dev.toml"),
     );
-    let task = Config::new(tools(&[("node", "lts"), ("go:golang.org/x/tools/gopls", "latest")]))
-        .with_mise(&mise.path)
+    let task = Config::global(tools(&[("node", "lts"), ("go:golang.org/x/tools/gopls", "latest")]))
         .with_file(&file)
         .with_link(&link);
     let mut ctx = capturing_ctx().0;
@@ -281,31 +262,80 @@ fn config_sets_tools_and_links_the_file_into_conf_d() -> Result<()> {
     task.apply(&mut ctx)?;
     assert_eq!(file, fs::read_link(&link)?);
     assert_eq!(
-        vec![
-            format!(r#"/: config set --file {} tools."node" lts"#, file.display()),
-            format!(
-                r#"/: config set --file {} tools."go:golang.org/x/tools/gopls" latest"#,
-                file.display()
-            ),
-        ],
-        mise.calls()?
+        format!("{GLOBAL_HEADER}[tools]\n\"node\" = \"lts\"\n\"go:golang.org/x/tools/gopls\" = \"latest\"\n"),
+        fs::read_to_string(&file)?
     );
     assert!(task.is_applied(&mut ctx)?);
     Ok(())
 }
 
 #[test]
+fn config_drops_tools_that_are_no_longer_listed() -> Result<()> {
+    let dir = tempdir()?;
+    let (file, link) = (
+        dir.path().join("dev/mise.toml"),
+        dir.path().join("config/mise/conf.d/dev.toml"),
+    );
+    fs::create_dir_all(file.parent().unwrap())?;
+    fs::write(&file, "[tools]\nshellcheck = \"0.11.0\"\nnode = \"26\"\n")?;
+    let task = Config::global(tools(&[("node", "24")]))
+        .with_file(&file)
+        .with_link(&link);
+    let mut ctx = capturing_ctx().0;
+
+    assert!(!task.is_applied(&mut ctx)?);
+    task.apply(&mut ctx)?;
+    assert_eq!(
+        format!("{GLOBAL_HEADER}[tools]\n\"node\" = \"24\"\n"),
+        fs::read_to_string(&file)?
+    );
+    assert!(task.is_applied(&mut ctx)?);
+    Ok(())
+}
+
+#[test]
+fn config_for_a_project_writes_dev_mise_toml_without_a_link() -> Result<()> {
+    let dir = tempdir()?;
+    let task = Config::project(dir.path(), tools(&[("jq", "1.7")]));
+    let mut ctx = capturing_ctx().0;
+
+    assert!(!task.is_applied(&mut ctx)?);
+    task.apply(&mut ctx)?;
+    let file = dir.path().join(".dev/mise.toml");
+    assert_eq!(
+        format!("{PROJECT_HEADER}[tools]\n\"jq\" = \"1.7\"\n"),
+        fs::read_to_string(&file)?
+    );
+    assert!(
+        fs::symlink_metadata(&file)?.is_file(),
+        "a project's file is never a link"
+    );
+    assert!(task.is_applied(&mut ctx)?);
+    Ok(())
+}
+
+#[test]
+fn config_quotes_keys_and_values_for_toml() -> Result<()> {
+    let dir = tempdir()?;
+    let task = Config::project(dir.path(), tools(&[("a\"b\\c", "1\t2")]));
+    task.apply(&mut capturing_ctx().0)?;
+    assert_eq!(
+        format!("{PROJECT_HEADER}[tools]\n\"a\\\"b\\\\c\" = \"1\\u00092\"\n"),
+        fs::read_to_string(dir.path().join(".dev/mise.toml"))?
+    );
+    Ok(())
+}
+
+#[test]
 fn config_will_not_replace_a_file_it_did_not_link() -> Result<()> {
     let dir = tempdir()?;
-    let mise = config_mise(&dir)?;
     let (file, link) = (
         dir.path().join("dev/mise.toml"),
         dir.path().join("config/mise/conf.d/dev.toml"),
     );
     fs::create_dir_all(link.parent().unwrap())?;
     fs::write(&link, "[tools]\njq = \"1.7\"\n")?;
-    let task = Config::new(tools(&[("node", "lts")]))
-        .with_mise(&mise.path)
+    let task = Config::global(tools(&[("node", "lts")]))
         .with_file(&file)
         .with_link(&link);
     let mut ctx = capturing_ctx().0;
@@ -324,24 +354,14 @@ fn config_will_not_replace_a_file_it_did_not_link() -> Result<()> {
         msg
     );
     assert_eq!("[tools]\njq = \"1.7\"\n", fs::read_to_string(&link)?);
-    assert_eq!(Vec::<String>::new(), mise.calls()?, "no tools should be set");
+    assert!(!file.exists(), "dev's config should be left as it was");
     Ok(())
 }
 
 #[test]
 fn config_is_not_applied_when_a_version_changed() -> Result<()> {
     let dir = tempdir()?;
-    let mise = config_mise(&dir)?;
-    let (file, link) = (
-        dir.path().join("dev/mise.toml"),
-        dir.path().join("config/mise/conf.d/dev.toml"),
-    );
-    let configure = |pairs: &[(&str, &str)]| {
-        Config::new(tools(pairs))
-            .with_mise(&mise.path)
-            .with_file(&file)
-            .with_link(&link)
-    };
+    let configure = |pairs: &[(&str, &str)]| Config::project(dir.path(), tools(pairs));
     let mut ctx = capturing_ctx().0;
     configure(&[("node", "22"), ("python", "3.14")]).apply(&mut ctx)?;
 

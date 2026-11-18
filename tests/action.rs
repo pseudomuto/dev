@@ -403,6 +403,31 @@ fn path_follows_xdg_data_home() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn path_points_mise_at_the_project_config_when_there_is_one() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let work = dir.path().join("work/.dev");
+    fs::create_dir_all(&work)?;
+    fs::write(work.join("mise.toml"), "[tools]\n")?;
+
+    let r = run("path", &dir, &[])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    assert_eq!(
+        vec![("MISE_DEFAULT_CONFIG_FILENAME".to_string(), ".dev/mise.toml".to_string())],
+        parse_github_env(&r.env)
+    );
+    Ok(())
+}
+
+#[test]
+fn path_leaves_mise_alone_without_a_project_config() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let r = run("path", &dir, &[])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    assert_eq!("", r.env);
+    Ok(())
+}
+
 /// Reads `$GITHUB_ENV` written as `NAME<<DELIM`, value lines, `DELIM`.
 fn parse_github_env(s: &str) -> Vec<(String, String)> {
     let mut vars = Vec::new();

@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Write},
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::Command,
@@ -21,24 +21,43 @@ const INSTALL_URL: &str = "https://mise.run";
 /// mise's file in the [`ShellDir`]. Must match `share/shell`.
 const SHELL_FILE: &str = "mise";
 
+/// Where a project's tools go, relative to its root. `.dev` is git-ignored
+/// (see [`RunLog`](crate::run_log::RunLog)).
+pub const PROJECT_CONFIG: &str = ".dev/mise.toml";
+
+/// Set to [`PROJECT_CONFIG`] in the env of a project with tools. mise adds
+/// it to the config filenames it looks for in each dir, so it loads the
+/// project's tools there and nowhere else. Must match
+/// `share/action/dev-action.sh`.
+pub const CONFIG_FILENAME_VAR: &str = "MISE_DEFAULT_CONFIG_FILENAME";
+
 /// Installs mise and a set of tools with it.
 ///
-/// The tools are added to dev's own mise config
-/// (`~/.config/dev/mise.toml`), which mise loads through a link in its
-/// `conf.d`. The user's own global config is never touched, and wins when
-/// both pin the same tool.
+/// The tools are written to one of dev's own mise configs (see [`Config`]).
+/// The user's own mise configs are never touched.
 pub struct Mise {
     tasks: Vec<Box<dyn Task>>,
     data_dir: Option<PathBuf>,
 }
 
 impl Mise {
-    /// Creates a dependency that installs mise, adds `tools` (name and
-    /// version, e.g. `("node", "lts")`) to dev's mise config, then installs
-    /// each tool in order.
-    pub fn new(tools: impl IntoIterator<Item = (String, String)>) -> Self {
+    /// Creates a dependency that installs mise, writes `tools` (name and
+    /// version, e.g. `("node", "lts")`) to dev's global mise config, then
+    /// installs each tool in order. See [`Config::global`].
+    pub fn global(tools: impl IntoIterator<Item = (String, String)>) -> Self {
         let tools: Vec<(String, String)> = tools.into_iter().collect();
-        let mut tasks: Vec<Box<dyn Task>> = vec![Box::new(Binary::default()), Box::new(Config::new(tools.clone()))];
+        Self::with_config(Config::global(tools.clone()), tools)
+    }
+
+    /// Like [`Mise::global`], but for the project in `root`. See
+    /// [`Config::project`].
+    pub fn project(root: impl Into<PathBuf>, tools: impl IntoIterator<Item = (String, String)>) -> Self {
+        let tools: Vec<(String, String)> = tools.into_iter().collect();
+        Self::with_config(Config::project(root, tools.clone()), tools)
+    }
+
+    fn with_config(config: Config, tools: Vec<(String, String)>) -> Self {
+        let mut tasks: Vec<Box<dyn Task>> = vec![Box::new(Binary::default()), Box::new(config)];
         tasks.extend(
             tools
                 .into_iter()
@@ -47,7 +66,7 @@ impl Mise {
         Self::with_tasks(tasks)
     }
 
-    /// Like [`Mise::new`], but with an explicit list of tasks to run, in
+    /// Like [`Mise::global`], but with an explicit list of tasks to run, in
     /// order.
     pub fn with_tasks(tasks: Vec<Box<dyn Task>>) -> Self {
         Self { tasks, data_dir: None }
@@ -303,34 +322,62 @@ impl Task for Binary {
     }
 }
 
-/// Adds tools to dev's mise config, and links that config into mise's
-/// `conf.d` so mise loads it.
+/// The header of a global [`Config`].
+const GLOBAL_HEADER: &str = "# Written by `dev up --global` from your global dev.yaml, and rewritten on every run.
+# Change dev.yaml instead of editing this file.
+";
+
+/// The header of a project's [`Config`].
+const PROJECT_HEADER: &str = "# Written by `dev up` from this project's dev.yaml, and rewritten on every run.
+# Change dev.yaml instead of editing this file.
+";
+
+/// Writes one of dev's mise configs, holding exactly the tools given. dev
+/// owns the file, so anything else in it is replaced.
+///
+/// - [`Config::global`]: `~/.config/dev/mise.toml`, linked into mise's `conf.d`
+///   so mise loads it everywhere. The user's own global config wins when both
+///   pin the same tool.
+/// - [`Config::project`]: `<project>/.dev/mise.toml`, which mise only loads in
+///   that project, through [`CONFIG_FILENAME_VAR`] in the project's env.
 pub struct Config {
     /// Name and version, e.g. `("node", "lts")`.
     tools: Vec<(String, String)>,
-    /// `None` means the mise [`Binary`] finds, resolved when needed.
-    mise: Option<PathBuf>,
     /// `None` means `$XDG_CONFIG_HOME/dev/mise.toml` (`~/.config/dev/...`).
     file: Option<PathBuf>,
-    /// `None` means `$MISE_CONFIG_DIR/conf.d/dev.toml`, where
-    /// `MISE_CONFIG_DIR` defaults to `$XDG_CONFIG_HOME/mise`, as in mise.
-    link: Option<PathBuf>,
+    link: Link,
+    header: &'static str,
+}
+
+/// Where a [`Config`] is linked from.
+enum Link {
+    /// Not linked: a project's config.
+    None,
+    /// `$MISE_CONFIG_DIR/conf.d/dev.toml`, where `MISE_CONFIG_DIR` defaults
+    /// to `$XDG_CONFIG_HOME/mise`, as in mise.
+    Default,
+    At(PathBuf),
 }
 
 impl Config {
-    pub fn new(tools: Vec<(String, String)>) -> Self {
+    /// dev's global config, linked into mise's `conf.d`.
+    pub fn global(tools: Vec<(String, String)>) -> Self {
         Self {
             tools,
-            mise: None,
             file: None,
-            link: None,
+            link: Link::Default,
+            header: GLOBAL_HEADER,
         }
     }
 
-    /// Uses the mise at `path` instead of the one [`Binary`] finds.
-    pub fn with_mise(mut self, path: impl Into<PathBuf>) -> Self {
-        self.mise = Some(path.into());
-        self
+    /// The config for the project in `root`, at `<root>/.dev/mise.toml`.
+    pub fn project(root: impl Into<PathBuf>, tools: Vec<(String, String)>) -> Self {
+        Self {
+            tools,
+            file: Some(root.into().join(PROJECT_CONFIG)),
+            link: Link::None,
+            header: PROJECT_HEADER,
+        }
     }
 
     /// Writes the tools to `path` instead of the default.
@@ -341,15 +388,8 @@ impl Config {
 
     /// Links the config from `path` instead of the default.
     pub fn with_link(mut self, path: impl Into<PathBuf>) -> Self {
-        self.link = Some(path.into());
+        self.link = Link::At(path.into());
         self
-    }
-
-    fn mise(&self) -> crate::Result<PathBuf> {
-        match &self.mise {
-            Some(path) => Ok(path.clone()),
-            None => default_mise(),
-        }
     }
 
     fn file(&self) -> crate::Result<PathBuf> {
@@ -359,11 +399,21 @@ impl Config {
         }
     }
 
-    fn link(&self) -> crate::Result<PathBuf> {
+    fn link(&self) -> crate::Result<Option<PathBuf>> {
         match &self.link {
-            Some(path) => Ok(path.clone()),
-            None => Ok(mise_config_dir()?.join("conf.d/dev.toml")),
+            Link::None => Ok(None),
+            Link::Default => Ok(Some(mise_config_dir()?.join("conf.d/dev.toml"))),
+            Link::At(path) => Ok(Some(path.clone())),
         }
+    }
+
+    /// What the file should hold.
+    fn contents(&self) -> String {
+        let mut out = format!("{}[tools]\n", self.header);
+        for (name, version) in &self.tools {
+            out.push_str(&format!("{} = {}\n", toml_string(name), toml_string(version)));
+        }
+        out
     }
 
     /// Links `link` to `file`, unless it already is. Fails rather than
@@ -395,62 +445,44 @@ impl Task for Config {
         "Configure tools"
     }
 
-    /// Creates dev's mise config if needed, links it into mise's `conf.d`,
-    /// and sets each tool's version in it, leaving other tools alone.
-    fn apply(&self, ctx: &mut crate::Context) -> crate::Result<()> {
-        let (mise, file) = (self.mise()?, self.file()?);
+    /// Links the config into mise's `conf.d` (global only), then replaces it
+    /// with one holding exactly the tools. The new file is written next to
+    /// the old one and renamed into place, so mise never reads half of it.
+    fn apply(&self, _ctx: &mut crate::Context) -> crate::Result<()> {
+        let file = self.file()?;
         let dir = file
             .parent()
             .ok_or_else(|| eyre!("expected {} to be a file in a directory", file.display()))?;
-        fs::create_dir_all(dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file)
-            .wrap_err_with(|| format!("failed to create {}", file.display()))?;
         // Link first, so a link that can't be made leaves the config as it was.
-        Self::ensure_link(&self.link()?, &file)?;
-
-        for (name, version) in &self.tools {
-            let key = tool_key(name);
-            let display = format!(
-                "{} config set --file {} {key} {version}",
-                mise.display(),
-                file.display()
-            );
-            let mut cmd = mise_command(ctx, &mise);
-            cmd.args(["config", "set", "--file"]).arg(&file).args([&key, version]);
-            process::output(&mut cmd, &display)?;
+        if let Some(link) = self.link()? {
+            Self::ensure_link(&link, &file)?;
         }
 
+        fs::create_dir_all(dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .wrap_err_with(|| format!("failed to create a temp file in {}", dir.display()))?;
+        tmp.write_all(self.contents().as_bytes())
+            .wrap_err_with(|| format!("failed to write {}", tmp.path().display()))?;
+        tmp.persist(&file)
+            .wrap_err_with(|| format!("failed to replace {}", file.display()))?;
         Ok(())
     }
 
-    /// Returns true if the config is linked into mise's `conf.d` and sets
-    /// every tool to its version.
-    fn is_applied(&self, ctx: &mut crate::Context) -> crate::Result<bool> {
-        let (file, link) = (self.file()?, self.link()?);
-        if !file.exists() || fs::read_link(&link).ok().as_deref() != Some(file.as_path()) {
+    /// Returns true if the config holds exactly the tools, and (global only)
+    /// is linked into mise's `conf.d`.
+    fn is_applied(&self, _ctx: &mut crate::Context) -> crate::Result<bool> {
+        let file = self.file()?;
+        if let Some(link) = self.link()?
+            && fs::read_link(&link).ok().as_deref() != Some(file.as_path())
+        {
             return Ok(false);
         }
 
-        let mise = self.mise()?;
-        for (name, version) in &self.tools {
-            // A non-zero exit means the key isn't set. Anything worse fails
-            // loudly when `apply` runs `config set`.
-            let output = mise_command(ctx, &mise)
-                .args(["config", "get", "--file"])
-                .arg(&file)
-                .arg(tool_key(name))
-                .output()
-                .wrap_err_with(|| format!("failed to run `{} config get`", mise.display()))?;
-
-            if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != version {
-                return Ok(false);
-            }
+        match fs::read_to_string(&file) {
+            Ok(contents) => Ok(contents == self.contents()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e).wrap_err_with(|| format!("failed to read {}", file.display())),
         }
-
-        Ok(true)
     }
 }
 
@@ -578,10 +610,22 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// The `mise config` key for tool `name`, quoted so names with dots (e.g.
-/// `go:golang.org/x/tools/gopls`) stay one key.
-fn tool_key(name: &str) -> String {
-    format!(r#"tools."{}""#, name.replace('\\', r"\\").replace('"', r#"\""#))
+/// `s` as a TOML basic string, e.g. `go:golang.org/x/tools/gopls` ->
+/// `"go:golang.org/x/tools/gopls"`. Quoting every key keeps names with dots
+/// one key.
+fn toml_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// The mise [`Binary`] would use, with the default `PATH` and install
