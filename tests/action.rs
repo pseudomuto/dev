@@ -4,12 +4,18 @@
 //! is downloaded and nothing outside the temp dir is touched.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::Path,
     process::{Command, ExitStatus},
 };
 
-use dev::Result;
+use dev::{
+    Result,
+    action,
+    deps::{brew, mise, rust},
+    layout::{Host, Layout},
+};
 use tempfile::TempDir;
 
 /// What a run of the script did.
@@ -64,32 +70,32 @@ fn run(sub: &str, dir: &TempDir, vars: &[(&str, &str)]) -> Result<Run> {
 #[test]
 fn resolve_version_uses_the_input() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let r = run("resolve-version", &dir, &[("INPUT_VERSION", "v0.2.0")])?;
+    let r = run("resolve-version", &dir, &[("INPUT_VERSION", "v0.4.2")])?;
     assert!(r.status.success(), "{}", r.stderr);
-    assert_eq!("version=0.2.0\ninstalled=false\n", r.output);
+    assert_eq!("version=0.4.2\ninstalled=false\n", r.output);
     Ok(())
 }
 
 #[test]
 fn resolve_version_uses_a_version_tag_ref() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let r = run("resolve-version", &dir, &[("DEV_ACTION_REF", "v0.3.1")])?;
+    let r = run("resolve-version", &dir, &[("DEV_ACTION_REF", "v1.0.1")])?;
     assert!(r.status.success(), "{}", r.stderr);
-    assert_eq!("version=0.3.1\ninstalled=false\n", r.output);
+    assert_eq!("version=1.0.1\ninstalled=false\n", r.output);
     Ok(())
 }
 
 #[test]
 fn resolve_version_reads_the_ref_from_the_action_path() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path().join("_actions/pseudomuto/dev/v0.3.1");
+    let path = dir.path().join("_actions/pseudomuto/dev/v1.0.1");
     let r = run(
         "resolve-version",
         &dir,
         &[("GITHUB_ACTION_PATH", path.to_str().unwrap())],
     )?;
     assert!(r.status.success(), "{}", r.stderr);
-    assert_eq!("version=0.3.1\ninstalled=false\n", r.output);
+    assert_eq!("version=1.0.1\ninstalled=false\n", r.output);
     Ok(())
 }
 
@@ -242,12 +248,108 @@ fn key(r: &Run) -> &str {
     r.output.lines().find(|l| l.starts_with("key=")).expect("a key line")
 }
 
+/// The lines of multiline output `name` (`name<<DELIM` ... `DELIM`) in
+/// `$GITHUB_OUTPUT`'s contents `s`.
+fn output_lines(s: &str, name: &str) -> Vec<String> {
+    let mut lines = s.lines();
+    let start = format!("{name}<<");
+    let delim = lines
+        .by_ref()
+        .find_map(|l| l.strip_prefix(&start))
+        .unwrap_or_else(|| panic!("no {name} output in:\n{s}"));
+    lines.take_while(|l| *l != delim).map(str::to_string).collect()
+}
+
+#[test]
+fn cache_key_lists_the_paths_dev_reports_for_both_caches() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let work = workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
+    let data = dir.path().join("home/data");
+    let xdg = [("XDG_DATA_HOME", data.to_str().unwrap())];
+    let vars: Vec<(&str, &str)> = KEY_VARS.iter().chain(&xdg).copied().collect();
+
+    let r = run_with_dev("cache-key", &dir, &vars)?;
+    assert!(r.status.success(), "{}", r.stderr);
+    let want = action::paths(&layout(&dir, &xdg)?, Host::current(), Path::new(&dev_dir()), &work);
+    assert_eq!(want.cache, output_lines(&r.output, "cache-paths"));
+    assert_eq!(want.brew_cache, output_lines(&r.output, "brew-paths"));
+    let installs = data.join("mise/installs").display().to_string();
+    assert!(
+        want.cache.contains(&installs),
+        "XDG_DATA_HOME moves the cache: {:?}",
+        want.cache
+    );
+    Ok(())
+}
+
+/// Writes an executable `path` that logs its args and the
+/// `MISE_DEFAULT_CONFIG_FILENAME` it saw to `log`.
+fn fake_logger(path: &Path, log: &Path) -> Result<()> {
+    fs::create_dir_all(path.parent().expect("files are in a dir"))?;
+    let body = format!(
+        "#!/bin/sh\necho \"$* var=${{MISE_DEFAULT_CONFIG_FILENAME:-}}\" >> '{}'\n",
+        log.display()
+    );
+    fs::write(path, body)?;
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    Ok(())
+}
+
+#[test]
+fn prune_runs_mise_with_the_project_env() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mise = dir.path().join("home/tools/mise");
+    let log = dir.path().join("log");
+    fake_logger(&mise, &log)?;
+    fs::create_dir_all(dir.path().join("work/.dev"))?;
+    fs::write(dir.path().join("work/.dev/mise.toml"), "[tools]\n")?;
+
+    let r = run_with_dev("prune", &dir, &[("MISE_INSTALL_PATH", mise.to_str().unwrap())])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    assert_eq!("prune --tools var=.dev/mise.toml\n", fs::read_to_string(&log)?);
+    Ok(())
+}
+
+#[test]
+fn prune_does_nothing_before_mise_is_installed() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let r = run_with_dev("prune", &dir, &[])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    Ok(())
+}
+
+#[test]
+fn brew_installed_says_whether_theres_a_brew_cache_to_save() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().join("home/zb-root");
+    let vars = [("ZEROBREW_ROOT", root.to_str().unwrap())];
+
+    let r = run_with_dev("brew-installed", &dir, &vars)?;
+    assert!(r.status.success(), "{}", r.stderr);
+    assert_eq!("installed=false\n", r.output, "nothing installed yet");
+
+    fs::create_dir_all(&root)?;
+    let r = run_with_dev("brew-installed", &dir, &vars)?;
+    assert!(r.status.success(), "{}", r.stderr);
+    // macOS has no brew cache (see `action::Paths::brew_cache`).
+    let cached = !action::paths(
+        &layout(&dir, &vars)?,
+        Host::current(),
+        Path::new(&dev_dir()),
+        &dir.path().join("work"),
+    )
+    .brew_cache
+    .is_empty();
+    assert_eq!(format!("installed={cached}\n"), r.output);
+    Ok(())
+}
+
 #[test]
 fn cache_key_is_stable_and_covers_dev_yaml() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let work = workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
 
-    let a = run("cache-key", &dir, KEY_VARS)?;
+    let a = run_with_dev("cache-key", &dir, KEY_VARS)?;
     assert!(
         a.output
             .starts_with("prefix=dev-linux-x64-ubuntu24-0.2.0-\nkey=dev-linux-x64-ubuntu24-0.2.0-"),
@@ -255,10 +357,10 @@ fn cache_key_is_stable_and_covers_dev_yaml() -> Result<()> {
         a.output,
         a.stderr
     );
-    assert_eq!(key(&a), key(&run("cache-key", &dir, KEY_VARS)?));
+    assert_eq!(key(&a), key(&run_with_dev("cache-key", &dir, KEY_VARS)?));
 
     fs::write(work.join("dev.yaml"), "name: other\n")?;
-    assert_ne!(key(&a), key(&run("cache-key", &dir, KEY_VARS)?));
+    assert_ne!(key(&a), key(&run_with_dev("cache-key", &dir, KEY_VARS)?));
     Ok(())
 }
 
@@ -266,9 +368,9 @@ fn cache_key_is_stable_and_covers_dev_yaml() -> Result<()> {
 /// `changes` is false), with `vars` on top of [`KEY_VARS`].
 fn assert_key_change(dir: &TempDir, file: &str, changes: bool, vars: &[(&str, &str)]) -> Result<()> {
     let vars: Vec<(&str, &str)> = KEY_VARS.iter().chain(vars).copied().collect();
-    let before = run("cache-key", dir, &vars)?;
+    let before = run_with_dev("cache-key", dir, &vars)?;
     fs::write(dir.path().join("work").join(file), "changed\n")?;
-    let after = run("cache-key", dir, &vars)?;
+    let after = run_with_dev("cache-key", dir, &vars)?;
     assert_eq!(changes, key(&before) != key(&after), "changing {file}");
     Ok(())
 }
@@ -315,7 +417,7 @@ fn cache_key_fails_on_a_glob_that_matches_nothing() -> Result<()> {
         .chain(&[("INPUT_CACHE_KEY_FILES", "nope/*.lock")])
         .copied()
         .collect();
-    let r = run("cache-key", &dir, &vars)?;
+    let r = run_with_dev("cache-key", &dir, &vars)?;
     assert_failed(&r, "cache-key-files pattern 'nope/*.lock' matched no tracked files");
     Ok(())
 }
@@ -324,49 +426,65 @@ fn cache_key_fails_on_a_glob_that_matches_nothing() -> Result<()> {
 fn cache_key_fails_without_a_dev_yaml() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let work = workspace(&dir, &[])?;
-    let r = run("cache-key", &dir, KEY_VARS)?;
+    let r = run_with_dev("cache-key", &dir, KEY_VARS)?;
     // The script prints the real path; on macOS the temp dir is behind a
     // symlink (/var -> /private/var).
     assert_failed(&r, &format!("no dev.yaml at {}", fs::canonicalize(&work)?.display()));
     Ok(())
 }
 
-/// Writes `contents` to `dir/home/<rel>`, making its dirs.
-fn home_file(dir: &TempDir, rel: &str, contents: &str) -> Result<()> {
-    let file = dir.path().join("home").join(rel);
-    fs::create_dir_all(file.parent().expect("files are in a dir"))?;
-    fs::write(file, contents)?;
+/// Runs `dev-action.sh <sub>` like [`run`], with the built dev on `PATH`.
+fn run_with_dev(sub: &str, dir: &TempDir, vars: &[(&str, &str)]) -> Result<Run> {
+    let path = path_with_dev();
+    let vars: Vec<(&str, &str)> = [("PATH", path.as_str())].iter().chain(vars).copied().collect();
+    run(sub, dir, &vars)
+}
+
+/// The dir the built dev is in, which `path` adds last.
+fn dev_dir() -> String {
+    let bin = Path::new(env!("CARGO_BIN_EXE_dev")).parent().expect("dev is in a dir");
+    bin.display().to_string()
+}
+
+/// The layout dev sees with the test's `$HOME` and `vars`.
+fn layout(dir: &TempDir, vars: &[(&str, &str)]) -> Result<Layout> {
+    let mut env = BTreeMap::from([("HOME".to_string(), dir.path().join("home").display().to_string())]);
+    env.extend(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    Layout::from_env(&env, Host::current())
+}
+
+/// Writes `contents` as setup `name`, where dev keeps it for `layout`.
+fn setup_file(layout: &Layout, name: &str, contents: &str) -> Result<()> {
+    fs::create_dir_all(&layout.shell_dir)?;
+    fs::write(layout.shell_dir.join(name), contents)?;
     Ok(())
 }
 
 #[test]
 fn path_puts_dev_tools_first_in_shell_init_order() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    home_file(
-        &dir,
-        ".local/share/dev/shell/rustup",
-        "export PATH=\"$HOME/.cargo/bin:$PATH\"\n",
-    )?;
-    home_file(
-        &dir,
-        ".local/share/dev/shell/zerobrew",
+    let l = layout(&dir, &[])?;
+    setup_file(&l, rust::SHELL_FILE, "export PATH=\"$HOME/.cargo/bin:$PATH\"\n")?;
+    setup_file(
+        &l,
+        brew::SHELL_FILE,
         "export PATH=\"$HOME/zb/bin:$HOME/zb/sbin:$PATH\"\n",
     )?;
     // Never sourced: mise's setup only works from a prompt hook.
-    home_file(&dir, ".local/share/dev/shell/mise", "exit 1\n")?;
-    fs::create_dir_all(dir.path().join("home/.local/share/mise/shims"))?;
+    setup_file(&l, mise::SHELL_FILE, "exit 1\n")?;
+    fs::create_dir_all(l.mise_data.join("shims"))?;
 
-    let r = run("path", &dir, &[])?;
+    let r = run_with_dev("path", &dir, &[])?;
     assert!(r.status.success(), "{}", r.stderr);
     let home = dir.path().join("home");
     let home = home.display();
     // GitHub puts the last line first, so this is lowest priority first.
     let want = [
-        format!("{home}/.local/bin"),
+        dev_dir(),
         format!("{home}/zb/sbin"),
         format!("{home}/zb/bin"),
         format!("{home}/.cargo/bin"),
-        format!("{home}/.local/share/mise/shims"),
+        l.mise_data.join("shims").display().to_string(),
     ];
     assert_eq!(want.join("\n") + "\n", r.path);
     Ok(())
@@ -375,30 +493,54 @@ fn path_puts_dev_tools_first_in_shell_init_order() -> Result<()> {
 #[test]
 fn path_skips_tools_that_arent_set_up() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let r = run("path", &dir, &[])?;
+    let r = run_with_dev("path", &dir, &[])?;
     assert!(r.status.success(), "{}", r.stderr);
-    assert_eq!(format!("{}/.local/bin\n", dir.path().join("home").display()), r.path);
+    assert_eq!(format!("{}\n", dev_dir()), r.path);
     Ok(())
 }
 
 #[test]
-fn path_follows_xdg_data_home() -> Result<()> {
+fn path_follows_xdg_data_home_and_mise_data_dir() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    home_file(
-        &dir,
-        "data/dev/shell/rustup",
-        "export PATH=\"$HOME/.cargo/bin:$PATH\"\n",
-    )?;
-    fs::create_dir_all(dir.path().join("home/data/mise/shims"))?;
     let data = dir.path().join("home/data");
+    let mise = dir.path().join("home/mise");
+    for vars in [
+        vec![("XDG_DATA_HOME", data.to_str().unwrap())],
+        vec![("MISE_DATA_DIR", mise.to_str().unwrap())],
+    ] {
+        let dir = tempfile::tempdir()?;
+        let l = layout(&dir, &vars)?;
+        setup_file(&l, rust::SHELL_FILE, "export PATH=\"$HOME/.cargo/bin:$PATH\"\n")?;
+        fs::create_dir_all(l.mise_data.join("shims"))?;
 
-    let r = run("path", &dir, &[("XDG_DATA_HOME", data.to_str().unwrap())])?;
-    assert!(r.status.success(), "{}", r.stderr);
-    let home = dir.path().join("home");
-    let home = home.display();
-    assert_eq!(
-        format!("{home}/.local/bin\n{home}/.cargo/bin\n{home}/data/mise/shims\n"),
-        r.path
+        let r = run_with_dev("path", &dir, &vars)?;
+        assert!(r.status.success(), "{vars:?}: {}", r.stderr);
+        let home = dir.path().join("home");
+        let want = format!(
+            "{}\n{}/.cargo/bin\n{}\n",
+            dev_dir(),
+            home.display(),
+            l.mise_data.join("shims").display()
+        );
+        assert_eq!(want, r.path, "{vars:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn path_fails_without_a_dev_that_has_action_paths() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    // Like an older dev, which runs `action-paths` as a dev.yaml command.
+    let bin = dir.path().join("old");
+    fs::create_dir_all(&bin)?;
+    fs::write(bin.join("dev"), "#!/bin/sh\necho 'no such command' >&2\nexit 1\n")?;
+    fs::set_permissions(bin.join("dev"), std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+
+    let r = run("path", &dir, &[("PATH", path.as_str())])?;
+    assert_failed(
+        &r,
+        "doesn't have `dev action-paths`; this action needs dev 0.4.0 or later",
     );
     Ok(())
 }
@@ -410,7 +552,7 @@ fn path_points_mise_at_the_project_config_when_there_is_one() -> Result<()> {
     fs::create_dir_all(&work)?;
     fs::write(work.join("mise.toml"), "[tools]\n")?;
 
-    let r = run("path", &dir, &[])?;
+    let r = run_with_dev("path", &dir, &[])?;
     assert!(r.status.success(), "{}", r.stderr);
     assert_eq!(
         vec![("MISE_DEFAULT_CONFIG_FILENAME".to_string(), ".dev/mise.toml".to_string())],
@@ -422,7 +564,7 @@ fn path_points_mise_at_the_project_config_when_there_is_one() -> Result<()> {
 #[test]
 fn path_leaves_mise_alone_without_a_project_config() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let r = run("path", &dir, &[])?;
+    let r = run_with_dev("path", &dir, &[])?;
     assert!(r.status.success(), "{}", r.stderr);
     assert_eq!("", r.env);
     Ok(())
@@ -501,9 +643,9 @@ fn export_env_sends_path_entries_to_github_path() -> Result<()> {
 #[test]
 fn path_exports_the_vars_a_tool_setup_sets() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    home_file(
-        &dir,
-        ".local/share/dev/shell/zerobrew",
+    setup_file(
+        &layout(&dir, &[])?,
+        brew::SHELL_FILE,
         concat!(
             "export ZEROBREW_PREFIX=\"$HOME/zb\"\n",
             "export PKG_CONFIG_PATH=\"$ZEROBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}\"\n",
@@ -511,7 +653,7 @@ fn path_exports_the_vars_a_tool_setup_sets() -> Result<()> {
         ),
     )?;
 
-    let r = run("path", &dir, &[])?;
+    let r = run_with_dev("path", &dir, &[])?;
     assert!(r.status.success(), "{}", r.stderr);
     let home = dir.path().join("home");
     let home = home.display();
@@ -520,15 +662,15 @@ fn path_exports_the_vars_a_tool_setup_sets() -> Result<()> {
         ("ZEROBREW_PREFIX".to_string(), format!("{home}/zb")),
     ];
     assert_eq!(want, parse_github_env(&r.env));
-    assert_eq!(format!("{home}/.local/bin\n{home}/zb/bin\n"), r.path);
+    assert_eq!(format!("{}\n{home}/zb/bin\n", dev_dir()), r.path);
     Ok(())
 }
 
 #[test]
 fn path_fails_when_a_tool_setup_fails() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    home_file(&dir, ".local/share/dev/shell/rustup", "exit 3\n")?;
-    let r = run("path", &dir, &[])?;
+    setup_file(&layout(&dir, &[])?, rust::SHELL_FILE, "exit 3\n")?;
+    let r = run_with_dev("path", &dir, &[])?;
     assert!(!r.status.success(), "expected a failure, got PATH: {}", r.path);
     assert!(r.stderr.contains("couldn't load the shell setup in"), "{}", r.stderr);
     Ok(())
@@ -546,7 +688,7 @@ fn cache_key_separates_runner_images() -> Result<()> {
     let dir = tempfile::tempdir()?;
     workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
     let older: Vec<(&str, &str)> = KEY_VARS.iter().chain(&[("ImageOS", "ubuntu22")]).copied().collect();
-    let r = run("cache-key", &dir, &older)?;
+    let r = run_with_dev("cache-key", &dir, &older)?;
     assert!(
         r.output.starts_with("prefix=dev-linux-x64-ubuntu22-0.2.0-\n"),
         "{}{}",
@@ -562,7 +704,7 @@ fn cache_key_works_out_the_image_without_image_os() -> Result<()> {
     workspace(&dir, &[("dev.yaml", "name: demo\n")])?;
     // Self-hosted runners don't set ImageOS; the host's OS stands in.
     let vars: Vec<(&str, &str)> = KEY_VARS.iter().chain(&[("ImageOS", "")]).copied().collect();
-    let r = run("cache-key", &dir, &vars)?;
+    let r = run_with_dev("cache-key", &dir, &vars)?;
     let prefix = r.output.lines().next().unwrap_or_default();
     let image = prefix.split('-').nth(3).unwrap_or_default();
     let (name, version) = image.split_at(image.find(|c: char| c.is_ascii_digit()).unwrap_or(image.len()));
@@ -575,15 +717,32 @@ fn cache_key_works_out_the_image_without_image_os() -> Result<()> {
 }
 
 #[test]
+fn resolve_version_rejects_a_dev_older_than_the_action_needs() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    for version in ["0.3.9", "v0.2.0"] {
+        let r = run("resolve-version", &dir, &[("INPUT_VERSION", version)])?;
+        assert_failed(
+            &r,
+            "is older than this action needs (0.4.0 or later); set the version input to 0.4.0 or later",
+        );
+    }
+    for version in ["0.4.0", "0.10.0", "1.0.0"] {
+        let r = run("resolve-version", &dir, &[("INPUT_VERSION", version)])?;
+        assert!(r.status.success(), "{version}: {}", r.stderr);
+    }
+    Ok(())
+}
+
+#[test]
 fn resolve_version_trusts_the_action_path_over_the_ref() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path().join("_actions/pseudomuto/dev/v0.3.1");
+    let path = dir.path().join("_actions/pseudomuto/dev/v1.0.1");
     let vars = [
         ("GITHUB_ACTION_PATH", path.to_str().unwrap()),
         ("DEV_ACTION_REF", "main"),
     ];
     let r = run("resolve-version", &dir, &vars)?;
     assert!(r.status.success(), "{}", r.stderr);
-    assert_eq!("version=0.3.1\ninstalled=false\n", r.output);
+    assert_eq!("version=1.0.1\ninstalled=false\n", r.output);
     Ok(())
 }

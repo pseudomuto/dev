@@ -7,10 +7,8 @@ use std::{
 
 use color_eyre::eyre::WrapErr;
 
-use super::data_home;
-
-/// The file shells read to tell whether the setup changed. Must match
-/// `share/shell`.
+/// The file shells read to tell whether the setup changed. `share/shell`
+/// gets its path from `dev shell-init`.
 const STAMP: &str = ".stamp";
 
 /// A directory of generated shell setup.
@@ -24,15 +22,25 @@ impl ShellDir {
         Self { path: path.into() }
     }
 
-    /// `$XDG_DATA_HOME/dev/shell`, or `~/.local/share/dev/shell`. Must match
-    /// `share/shell`.
+    /// `$XDG_DATA_HOME/dev/shell`, or `~/.local/share/dev/shell`. See
+    /// [`layout::shell_dir`](crate::layout::shell_dir).
     pub fn user_default() -> crate::Result<Self> {
-        Ok(Self::new(data_home()?.join("dev/shell")))
+        Ok(Self::new(crate::layout::shell_dir(&crate::layout::process)?))
+    }
+
+    /// The directory itself.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     /// Where the setup called `name` lives.
     pub fn file(&self, name: &str) -> PathBuf {
         self.path.join(name)
+    }
+
+    /// The stamp, which every write replaces.
+    pub fn stamp_file(&self) -> PathBuf {
+        self.file(STAMP)
     }
 
     /// The current stamp, e.g. `"1762880000123456789"`.

@@ -73,10 +73,9 @@ runs:
         INPUT_CACHE_KEY_FILES: ${{ inputs.cache-key-files }}
       run: sh "$GITHUB_ACTION_PATH/share/action/dev-action.sh" cache-key
 
-    # dev's own mise config (~/.config) is left out on purpose: dev only adds
-    # to it, so a cached copy would keep tools removed from dev.yaml working.
-    # The stable toolchain ships with GitHub's images. zerobrew has its own
-    # cache, below.
+    # What's cached comes from `dev action-paths` (see src/action.rs), so it
+    # follows the runner's XDG and tool overrides. zerobrew has its own cache,
+    # below.
     - name: Restore the cache
       id: restore
       if: inputs.cache == 'true'
@@ -84,32 +83,20 @@ runs:
       with:
         key: ${{ steps.key.outputs.key }}
         restore-keys: ${{ steps.key.outputs.prefix }}
-        path: |
-          ~/.rustup/toolchains
-          !~/.rustup/toolchains/stable-*
-          ~/.rustup/update-hashes
-          ~/.local/bin/mise
-          ~/.local/share/mise/installs
-          ~/.local/share/mise/shims
-          ~/.local/share/dev/shell
-          !~/.local/share/dev/shell/zerobrew
+        path: ${{ steps.key.outputs.cache-paths }}
 
     # Exact key only: dev never uninstalls brew packages (a laptop's other
     # projects may need them), so restoring an older cache would keep a
     # package removed from dev.yaml working in CI. The `brew-` prefix keeps
-    # the main cache's prefix match from ever picking this one up.
+    # the main cache's prefix match from ever picking this one up. There are
+    # no brew paths on macOS, where zerobrew lives in root-owned /opt.
     - name: Restore the brew cache
       id: restore-brew
-      if: inputs.cache == 'true'
+      if: inputs.cache == 'true' && steps.key.outputs.brew-paths != ''
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: brew-${{ steps.key.outputs.key }}
-        path: |
-          ~/.local/bin/zb
-          ~/.local/bin/zb-brew
-          ~/.local/bin/zbx
-          ~/.local/share/zerobrew
-          ~/.local/share/dev/shell/zerobrew
+        path: ${{ steps.key.outputs.brew-paths }}
 
     - name: dev up
       shell: bash
@@ -130,15 +117,7 @@ runs:
       if: inputs.cache == 'true'
       shell: bash
       working-directory: ${{ github.workspace }}
-      # Without it, mise never sees the project's .dev/mise.toml, so it
-      # finds nothing to prune. See CONFIG_FILENAME_VAR in src/deps/mise.rs.
-      env:
-        MISE_DEFAULT_CONFIG_FILENAME: .dev/mise.toml
-      run: |
-        PATH="$HOME/.local/bin:$PATH"
-        if command -v mise > /dev/null; then
-          mise prune --tools < /dev/null
-        fi
+      run: sh "$GITHUB_ACTION_PATH/share/action/dev-action.sh" prune
 
     # Right after `dev up`, so a later failing step doesn't lose it.
     - name: Save the cache
@@ -146,39 +125,21 @@ runs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: ${{ steps.key.outputs.key }}
-        path: |
-          ~/.rustup/toolchains
-          !~/.rustup/toolchains/stable-*
-          ~/.rustup/update-hashes
-          ~/.local/bin/mise
-          ~/.local/share/mise/installs
-          ~/.local/share/mise/shims
-          ~/.local/share/dev/shell
-          !~/.local/share/dev/shell/zerobrew
+        path: ${{ steps.key.outputs.cache-paths }}
 
     # Only projects with brew deps have anything to save.
     - name: Check for brew packages
       id: brew
       if: inputs.cache == 'true' && steps.restore-brew.outputs.cache-hit != 'true'
       shell: bash
-      run: |
-        if [ -d "$HOME/.local/share/zerobrew" ]; then
-          echo installed=true >> "$GITHUB_OUTPUT"
-        else
-          echo installed=false >> "$GITHUB_OUTPUT"
-        fi
+      run: sh "$GITHUB_ACTION_PATH/share/action/dev-action.sh" brew-installed
 
     - name: Save the brew cache
       if: steps.brew.outputs.installed == 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: brew-${{ steps.key.outputs.key }}
-        path: |
-          ~/.local/bin/zb
-          ~/.local/bin/zb-brew
-          ~/.local/bin/zbx
-          ~/.local/share/zerobrew
-          ~/.local/share/dev/shell/zerobrew
+        path: ${{ steps.key.outputs.brew-paths }}
 
     - name: Put dev's tools on PATH
       shell: bash

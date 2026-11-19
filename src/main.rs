@@ -8,11 +8,13 @@ use std::{
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use color_eyre::{
     Section,
-    eyre::{Result, WrapErr, bail},
+    eyre::{Result, WrapErr, bail, eyre},
 };
 use dev::{
     Context,
+    action,
     deps::packages::Mode,
+    layout,
     new::{self, Templates},
     project::{Project, Scope, process_env},
     report::{Plain, Reporter, clack::Clack},
@@ -66,6 +68,10 @@ enum Command {
     /// `share/shell` before every prompt.
     #[command(hide = true)]
     HookEnv,
+    /// Print, as JSON, what the GitHub Action puts on PATH, exports, and
+    /// caches. Run by `share/action/dev-action.sh`.
+    #[command(hide = true)]
+    ActionPaths,
     /// Run a command from the `commands` section of ./dev.yaml
     #[command(external_subcommand)]
     Project(Vec<String>),
@@ -83,7 +89,18 @@ async fn main() -> Result<()> {
     // These run anywhere, with or without ./dev.yaml.
     match cli.command {
         Command::ShellInit => {
-            print!("{}", shell::SETUP);
+            print!("{}", shell::init_script(&shell::ShellDir::user_default()?));
+            return Ok(());
+        }
+        Command::ActionPaths => {
+            let exe = env::current_exe().wrap_err("failed to find the running dev")?;
+            let dev_dir = exe
+                .parent()
+                .ok_or_else(|| eyre!("{} isn't in a directory", exe.display()))?;
+            let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
+            let host = layout::Host::current();
+            let paths = action::paths(&layout::Layout::current()?, host, dev_dir, &cwd);
+            println!("{}", serde_json::to_string(&paths)?);
             return Ok(());
         }
         Command::HookEnv => {
@@ -162,7 +179,7 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
-        Command::ShellInit | Command::HookEnv | Command::SelfUpdate { .. } => {
+        Command::ShellInit | Command::HookEnv | Command::ActionPaths | Command::SelfUpdate { .. } => {
             unreachable!("handled before loading dev.yaml")
         }
         Command::Up { .. } => with_run_log(&mut ctx, logs.as_deref(), "up", &project.name, |ctx| {

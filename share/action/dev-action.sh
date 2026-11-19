@@ -7,6 +7,8 @@
 #   resolve-version   Works out which dev to install.
 #   cache-key         Builds the cache key from what `dev up` reads.
 #   path              Puts the tools `dev up` installed on PATH.
+#   prune             Drops tool versions dev.yaml no longer uses.
+#   brew-installed    Says whether there's a brew cache to save.
 #   export-env        Exports dev.yaml's env to later steps.
 #
 # Settings come in as env vars, and results go to the files GitHub gives each
@@ -15,16 +17,28 @@
 
 set -eu
 
+# The first dev with `dev action-paths`, which this script asks where dev put
+# its tools. An older dev would run `action-paths` as a dev.yaml command
+# instead, so a version picked from the inputs is checked before installing,
+# and an `installed` dev by what `action-paths` prints (see dev_paths).
+MIN_DEV=0.4.0
+
+# A newline, for building lists one entry per line.
+NL='
+'
+
 # Everything runs from here, so a truncated file runs nothing at all.
 main() {
   case "${1:-}" in
     resolve-version) resolve_version ;;
     cache-key) cache_key ;;
     path) path ;;
+    prune) prune ;;
+    brew-installed) brew_installed ;;
     export-env) export_env ;;
     # Internal: run by `path` in a separate shell.
     load-setup) load_setup "$2" ;;
-    *) die "unknown subcommand '${1:-}'; expected resolve-version, cache-key, path, or export-env" 2 ;;
+    *) die "unknown subcommand '${1:-}'; expected resolve-version, cache-key, path, prune, brew-installed, or export-env" 2 ;;
   esac
 }
 
@@ -57,6 +71,10 @@ resolve_version() {
       version=$(version_from "$ref") ||
         die "can't tell which dev to install from ref '$ref'; set the version input, e.g. version: 0.2.0"
     fi
+  fi
+
+  if [ "$installed" = false ] && ! version_at_least "$version" "$MIN_DEV"; then
+    die "dev $version is older than this action needs ($MIN_DEV or later); set the version input to $MIN_DEV or later, or use the action at an older ref"
   fi
 
   output version "$version"
@@ -106,6 +124,19 @@ version_of_sha() {
   esac
 }
 
+# Whether version $1 is at least $2, both like 0.2.0, comparing each part as
+# a number.
+version_at_least() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 > y[i] + 0) exit 0
+      if (x[i] + 0 < y[i] + 0) exit 1
+    }
+    exit 0
+  }'
+}
+
 # Prints $1 without a leading `v` if it's a version like 0.2.0, or fails.
 version_from() {
   v=${1#v}
@@ -123,6 +154,10 @@ version_from() {
 # rust-toolchain.toml if there is one, and the tracked files matching each
 # line of INPUT_CACHE_KEY_FILES. Language manifests are left out on purpose:
 # `dev up` installs project packages, but they aren't in this cache.
+#
+# Also writes `cache-paths` and `brew-paths`, what the cache steps save and
+# restore, one per line (empty brew paths mean no brew cache). Needs dev and
+# jq, so it runs after dev is installed.
 cache_key() {
   [ -f dev.yaml ] || die "no dev.yaml at $(pwd); the action runs \`dev up\` from the root of the checkout"
 
@@ -163,6 +198,14 @@ cache_key() {
   prefix="dev-$os-$arch-$image-${DEV_VERSION:?}-"
   output prefix "$prefix"
   output key "$prefix$hash"
+
+  # What the cache steps save and restore, from dev, so the paths follow the
+  # runner's XDG and tool overrides. Empty brew paths mean no brew cache.
+  paths=$(dev_paths)
+  cache=$(printf '%s' "$paths" | jq -r '.cache[]') || die "couldn't read the cache paths from \`dev action-paths\`"
+  brew=$(printf '%s' "$paths" | jq -r '.brew_cache[]') || die "couldn't read the brew cache paths from \`dev action-paths\`"
+  output_lines cache-paths "$cache"
+  output_lines brew-paths "$brew"
 }
 
 # The OS and its major version, e.g. ubuntu24 or macos15, for runners that
@@ -196,37 +239,92 @@ sha256() {
 }
 
 # Adds the dirs `dev up` set up to $GITHUB_PATH, in the order `dev
-# shell-init` would put them on PATH: mise's shims, then rustup's and
-# zerobrew's dirs, then ~/.local/bin (dev itself). Any other vars those
-# setups set (e.g. zerobrew's PKG_CONFIG_PATH) go to $GITHUB_ENV.
+# shell-init` would put them on PATH, as `dev action-paths` lists them. Any
+# other vars those setups set (e.g. zerobrew's PKG_CONFIG_PATH) go to
+# $GITHUB_ENV, and so does the project env dev lists (MISE_DEFAULT_CONFIG_FILENAME
+# when the project has tools, so mise's shims find them).
 #
-# rustup's and zerobrew's are read from the setup dev wrote for each, so they
-# can't drift from what a shell gets. mise's setup is `mise activate`, which
-# only changes PATH from a prompt hook, so its shims dir is used instead.
-#
-# A project's tools are in .dev/mise.toml, which mise's shims only find with
-# MISE_DEFAULT_CONFIG_FILENAME set, as dev sets it for `dev <cmd>`. So that
-# goes to $GITHUB_ENV too, when the project has tools. Must match
-# CONFIG_FILENAME_VAR and PROJECT_CONFIG in src/deps/mise.rs.
+# A `setup` entry is read from the file dev wrote, so it can't drift from what
+# a shell gets. A `dir` entry is added if it exists.
 path() {
-  shell_dir="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell"
-  shims="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims"
+  paths=$(dev_paths)
+  entries=$(printf '%s' "$paths" | jq -r '.path[] | if .dir then "dir \(.dir)" else "setup \(.setup)" end') ||
+    die "couldn't read the PATH entries from \`dev action-paths\`"
 
-  # Plain assignments, not part of a pipeline, so a failure stops the script.
-  rustup=$(added_by "$shell_dir/rustup")
-  zerobrew=$(added_by "$shell_dir/zerobrew")
-  if [ ! -d "$shims" ]; then
-    shims=
+  # Highest priority first, one per line. Plain assignments, not part of a
+  # pipeline, so a failing setup stops the script.
+  dirs=
+  while IFS= read -r entry; do
+    case "$entry" in
+      "dir "*)
+        dir=${entry#dir }
+        if [ -d "$dir" ]; then
+          dirs="$dirs$dir$NL"
+        fi
+        ;;
+      "setup "*)
+        added=$(added_by "${entry#setup }")
+        dirs="$dirs$added$NL"
+        ;;
+    esac
+  done <<EOF
+$entries
+EOF
+
+  # Blanks and duplicates dropped.
+  add_to_path "$(printf '%s' "$dirs" | awk 'length && !seen[$0]++')"
+
+  printf '%s' "$paths" | jq -r --arg d "$(delimiter)" '.env | to_entries[] | "\(.key)<<\($d)\n\(.value)\n\($d)"' >>"$GITHUB_ENV" ||
+    die "couldn't export the project env from \`dev action-paths\`"
+}
+
+# Prints what `dev action-paths` says, run in the workspace, or fails saying
+# which dev this action needs. An older dev runs `action-paths` as a dev.yaml
+# command, which fails or prints something else, so its output is checked.
+dev_paths() {
+  need dev "to find where dev put its tools"
+  need jq "to read where dev put its tools"
+  if ! json=$(cd "${GITHUB_WORKSPACE:?}" && dev action-paths) ||
+    ! printf '%s' "$json" | jq -e '.path and .env and .mise and .cache and .brew_cache and .brew_root' >/dev/null 2>&1; then
+    die "$(command -v dev) doesn't have \`dev action-paths\`; this action needs dev $MIN_DEV or later"
   fi
+  printf '%s\n' "$json"
+}
 
-  # Highest priority first, one per line, blanks and duplicates dropped.
-  dirs=$(printf '%s\n' "$shims" "$rustup" "$zerobrew" "$HOME/.local/bin" | awk 'length && !seen[$0]++')
+# Drops tool versions dev.yaml no longer uses, so they don't pile up in every
+# later cache. Runs the mise dev installed, with the project env, so it sees
+# the project's tools; nothing to do before mise is installed. Never prompts.
+prune() {
+  paths=$(dev_paths)
+  mise=$(printf '%s' "$paths" | jq -r .mise) || die "couldn't read mise's path from \`dev action-paths\`"
+  [ -x "$mise" ] || return 0
+  vars=$(printf '%s' "$paths" | jq -r '.env | to_entries[] | "\(.key)=\(.value)"') ||
+    die "couldn't read the project env from \`dev action-paths\`"
 
-  add_to_path "$dirs"
+  (
+    cd "${GITHUB_WORKSPACE:?}"
+    while IFS= read -r var; do
+      if [ -n "$var" ]; then
+        export "${var?}"
+      fi
+    done <<EOF
+$vars
+EOF
+    "$mise" prune --tools </dev/null
+  )
+}
 
-  if [ -f "${GITHUB_WORKSPACE:?}/.dev/mise.toml" ]; then
-    d=$(delimiter)
-    printf 'MISE_DEFAULT_CONFIG_FILENAME<<%s\n.dev/mise.toml\n%s\n' "$d" "$d" >>"$GITHUB_ENV"
+# Writes `installed` to $GITHUB_OUTPUT: true when `dev up` installed brew
+# packages and there's a brew cache to save them in (none on macOS; see
+# `brew_cache` in src/action.rs).
+brew_installed() {
+  paths=$(dev_paths)
+  root=$(printf '%s' "$paths" | jq -r .brew_root) || die "couldn't read zerobrew's root from \`dev action-paths\`"
+  count=$(printf '%s' "$paths" | jq '.brew_cache | length') || die "couldn't read the brew cache from \`dev action-paths\`"
+  if [ "$count" -gt 0 ] && [ -d "$root" ]; then
+    output installed true
+  else
+    output installed false
   fi
 }
 
@@ -339,6 +437,16 @@ export_env() {
 # Adds `$1=$2` to the step's outputs.
 output() {
   printf '%s=%s\n' "$1" "$2" >>"$GITHUB_OUTPUT"
+}
+
+# Adds output $1 with the lines in $2, which may be empty.
+output_lines() {
+  d=$(delimiter)
+  if [ -n "$2" ]; then
+    printf '%s<<%s\n%s\n%s\n' "$1" "$d" "$2" "$d" >>"$GITHUB_OUTPUT"
+  else
+    printf '%s<<%s\n%s\n' "$1" "$d" "$d" >>"$GITHUB_OUTPUT"
+  fi
 }
 
 say() {

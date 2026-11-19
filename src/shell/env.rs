@@ -250,6 +250,6 @@ fn is_identifier(name: &str) -> bool {
 }
 
 /// Single-quotes `value` for sh, so nothing in it is expanded.
-fn quote(value: &str) -> String {
+pub(crate) fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }

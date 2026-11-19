@@ -1,0 +1,7 @@
+# The brew job in .github/workflows/ci.yaml runs the action with this in place
+# of the repo's dev.yaml, so zerobrew's paths and cache get checked in CI.
+name: action-brew
+deps:
+  brew: [jq]
+  # The checkout's Cargo.toml isn't this fixture's.
+  packages: false
