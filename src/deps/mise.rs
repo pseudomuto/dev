@@ -1,9 +1,9 @@
 use std::{
     env,
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs,
     io::{ErrorKind, Write},
-    os::unix::fs::{PermissionsExt, symlink},
+    os::unix::fs::symlink,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -12,7 +12,12 @@ use color_eyre::eyre::{WrapErr, bail, eyre};
 use serde::Deserialize;
 
 use crate::{
-    deps::{Dependency, Example, Task},
+    deps::{
+        Dependency,
+        Example,
+        Task,
+        bin::{self, Found},
+    },
     layout,
     process,
     shell::{ShellDir, config_home},
@@ -197,24 +202,6 @@ impl Default for Binary {
     }
 }
 
-/// Which mise to use, and who looks after it.
-enum Found {
-    /// Not installed. dev will install it here.
-    Missing(PathBuf),
-    /// Installed where dev installs it, so dev keeps it current.
-    Managed(PathBuf),
-    /// Installed by something else, which keeps it current.
-    External(PathBuf),
-}
-
-impl Found {
-    fn path(&self) -> &Path {
-        match self {
-            Found::Missing(p) | Found::Managed(p) | Found::External(p) => p,
-        }
-    }
-}
-
 impl Binary {
     /// Looks for an existing mise in `path` (`PATH` syntax) instead of
     /// `$PATH`.
@@ -242,22 +229,17 @@ impl Binary {
         self
     }
 
-    fn locate(&self) -> crate::Result<Found> {
+    fn locate(&self, ctx: &crate::Context) -> crate::Result<Found> {
         let install = match &self.install_path {
             Some(path) => path.clone(),
             None => default_install_path()?,
         };
         let search = match &self.search_path {
             Some(path) => path.clone(),
-            None => env::var_os("PATH").unwrap_or_default(),
+            None => bin::search_path(ctx),
         };
 
-        Ok(match find_on_path(&search, "mise") {
-            Some(path) if path == install => Found::Managed(path),
-            Some(path) => Found::External(path),
-            None if is_executable(&install) => Found::Managed(install),
-            None => Found::Missing(install),
-        })
+        Ok(bin::locate(&search, "mise", &install))
     }
 
     fn shell_dir(&self) -> crate::Result<ShellDir> {
@@ -269,27 +251,18 @@ impl Binary {
 
     /// Runs the mise installer, which installs mise at `path`.
     fn install(&self, ctx: &mut crate::Context, path: &Path) -> crate::Result<()> {
-        // pipefail matters: without it, a failed curl pipes nothing into sh,
-        // which then exits 0 and the install looks like it succeeded.
-        let mut cmd = ctx.command("bash");
-        cmd.args([
-            "-c",
-            r#"set -o pipefail; curl -fsSL "$1" | sh"#,
-            "bash",
-            &self.install_url,
-        ])
-        .env("MISE_INSTALL_PATH", path);
-
-        process::run(ctx, &mut cmd).wrap_err_with(|| format!("mise installer ({}) failed", self.install_url))?;
-
-        if !is_executable(path) {
-            bail!(
-                "the mise installer ({}) finished, but there's no mise at {}",
-                self.install_url,
-                path.display()
-            );
-        }
-        Ok(())
+        bin::run(
+            ctx,
+            bin::Script {
+                what: "mise",
+                url: &self.install_url,
+                shell: "sh",
+                args: &[],
+                env: &[("MISE_INSTALL_PATH", path.as_os_str())],
+                interactive: false,
+                expect: path,
+            },
+        )
     }
 }
 
@@ -304,7 +277,7 @@ impl Task for Binary {
     /// Output from the installer and `mise self-update` goes to `ctx.log` as
     /// they run.
     fn apply(&self, ctx: &mut crate::Context) -> crate::Result<()> {
-        let mise = match self.locate()? {
+        let mise = match self.locate(ctx)? {
             Found::Missing(path) => {
                 self.install(ctx, &path)?;
                 path
@@ -326,7 +299,7 @@ impl Task for Binary {
     /// Returns true if mise is installed, its shell setup points at it, and
     /// (when dev installed it) it's the latest release.
     fn is_applied(&self, ctx: &mut crate::Context) -> crate::Result<bool> {
-        let found = self.locate()?;
+        let found = self.locate(ctx)?;
         let setup = self.shell_dir()?.file(SHELL_FILE);
         let current_setup = match fs::read_to_string(&setup) {
             Ok(contents) => contents == shell_setup(found.path()),
@@ -425,10 +398,10 @@ impl Config {
         self
     }
 
-    fn mise(&self) -> crate::Result<PathBuf> {
+    fn mise(&self, ctx: &crate::Context) -> crate::Result<PathBuf> {
         match &self.mise {
             Some(path) => Ok(path.clone()),
-            None => default_mise(),
+            None => default_mise(ctx),
         }
     }
 
@@ -528,7 +501,7 @@ impl Task for Config {
         if self.trust_options && self.tools.iter().any(|t| !t.options.is_empty()) {
             // mise runs from `/`, where a relative path means something else.
             let file = fs::canonicalize(&file).wrap_err_with(|| format!("failed to resolve {}", file.display()))?;
-            let mise = self.mise()?;
+            let mise = self.mise(ctx)?;
             let mut cmd = mise_command(ctx, &mise);
             process::run(ctx, cmd.arg("trust").arg(&file))
                 .wrap_err_with(|| format!("`{} trust {}` failed", mise.display(), file.display()))?;
@@ -599,10 +572,10 @@ impl Tool {
         self
     }
 
-    fn mise(&self) -> crate::Result<PathBuf> {
+    fn mise(&self, ctx: &crate::Context) -> crate::Result<PathBuf> {
         match &self.mise {
             Some(path) => Ok(path.clone()),
-            None => default_mise(),
+            None => default_mise(ctx),
         }
     }
 }
@@ -615,7 +588,7 @@ impl Task for Tool {
     /// Runs `mise install <name>@<version>`, with its output going to
     /// `ctx.log` as it runs.
     fn apply(&self, ctx: &mut crate::Context) -> crate::Result<()> {
-        let mise = self.mise()?;
+        let mise = self.mise(ctx)?;
         let mut cmd = mise_command(ctx, &mise);
         process::run(ctx, cmd.args(["install", &self.spec]))
             .wrap_err_with(|| format!("`{} install {}` failed", mise.display(), self.spec))
@@ -626,7 +599,7 @@ impl Task for Tool {
     /// mise exits 1 both when the tool needs installing and when it can't
     /// find it, so an unknown tool only fails, with mise's error, in `apply`.
     fn is_applied(&self, ctx: &mut crate::Context) -> crate::Result<bool> {
-        let mise = self.mise()?;
+        let mise = self.mise(ctx)?;
         let output = mise_command(ctx, &mise)
             .args(["install", "--dry-run-code", &self.spec])
             .output()
@@ -717,8 +690,8 @@ fn toml_string(s: &str) -> String {
 
 /// The mise [`Binary`] would use, with the default `PATH` and install
 /// location.
-fn default_mise() -> crate::Result<PathBuf> {
-    Ok(Binary::default().locate()?.path().to_owned())
+fn default_mise(ctx: &crate::Context) -> crate::Result<PathBuf> {
+    Ok(Binary::default().locate(ctx)?.path().to_owned())
 }
 
 /// Where the installer puts mise: `$MISE_INSTALL_PATH`, or
@@ -733,17 +706,4 @@ fn mise_config_dir() -> crate::Result<PathBuf> {
         Some(dir) => Ok(PathBuf::from(dir)),
         None => Ok(config_home()?.join("mise")),
     }
-}
-
-/// The first executable `name` in `path` (`PATH` syntax). Relative entries
-/// are skipped, so where dev runs from can't change which mise it finds.
-fn find_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
-    env::split_paths(path)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join(name))
-        .find(|candidate| is_executable(candidate))
-}
-
-fn is_executable(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }

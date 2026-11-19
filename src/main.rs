@@ -99,7 +99,11 @@ async fn main() -> Result<()> {
                 .ok_or_else(|| eyre!("{} isn't in a directory", exe.display()))?;
             let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
             let host = layout::Host::current();
-            let paths = action::paths(&layout::Layout::current()?, host, dev_dir, &cwd);
+            let layout = layout::Layout::current()?;
+            // The Action step's PATH: action-paths has no project env.
+            let search = env::var_os("PATH").unwrap_or_default();
+            let mise = dev::deps::bin::locate(&search, "mise", &layout.mise_bin);
+            let paths = action::paths(&layout, host, mise.path(), dev_dir, &cwd);
             println!("{}", serde_json::to_string(&paths)?);
             return Ok(());
         }

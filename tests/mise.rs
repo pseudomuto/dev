@@ -332,7 +332,10 @@ fn config_writes_options_as_an_inline_table() -> Result<()> {
     let aws = ToolSpec::new("aws", "2.37")
         .with_option("symlink_bins", "true")
         .with_option("exe", "aws");
-    let task = Config::project(dir.path(), vec![aws, ToolSpec::new("jq", "1.7")]);
+    // A fake mise: tools with options get `mise trust`, which would write
+    // to the real mise's trust store.
+    let mise = install_mise(&dir, 0)?;
+    let task = Config::project(dir.path(), vec![aws, ToolSpec::new("jq", "1.7")]).with_mise(&mise.path);
     task.apply(&mut capturing_ctx().0)?;
     assert_eq!(
         format!(
@@ -545,5 +548,25 @@ fn mise_puts_its_shims_on_path_for_what_comes_after() -> Result<()> {
         ctx.env,
         "first, once, and keeping the project's"
     );
+    Ok(())
+}
+
+#[test]
+fn binary_uses_an_external_mise_on_the_ctx_path() -> Result<()> {
+    let dir = tempdir()?;
+    let mise = FakeMise::new(&dir, "external/mise", "not json")?;
+    let task = Binary::default()
+        .with_install_path(dir.path().join("managed/mise"))
+        .with_install_url(format!("file://{}", dir.path().join("missing").display()))
+        .with_shell_dir(dir.path().join("shell"));
+    let mut ctx = capturing_ctx().0;
+    ctx.env = vec![("PATH".into(), dir.path().join("external").display().to_string())];
+
+    task.apply(&mut ctx)?;
+    assert_eq!(
+        setup_for(&mise.path),
+        fs::read_to_string(dir.path().join("shell/mise"))?
+    );
+    assert!(!dir.path().join("managed/mise").exists());
     Ok(())
 }

@@ -1,4 +1,4 @@
-use std::{env, ffi::OsString, path::Path};
+use std::{env, path::Path};
 
 use color_eyre::eyre::{WrapErr, eyre};
 
@@ -8,6 +8,7 @@ use crate::{
     report::{self, Status},
 };
 
+pub mod bin;
 pub mod brew;
 pub mod mise;
 pub mod packages;
@@ -83,10 +84,7 @@ pub fn tasks_met(tasks: &[Box<dyn Task>], ctx: &mut Context) -> Result<bool> {
 /// already on it. Starts from a `PATH` the project env set, or else dev's
 /// own.
 pub(crate) fn prepend_path(ctx: &mut Context, dir: &Path) -> Result<()> {
-    let current = match ctx.env.iter().find(|(name, _)| name == "PATH") {
-        Some((_, value)) => OsString::from(value),
-        None => env::var_os("PATH").unwrap_or_default(),
-    };
+    let current = bin::search_path(ctx);
     if env::split_paths(&current).any(|p| p == dir) {
         return Ok(());
     }

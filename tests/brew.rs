@@ -361,3 +361,28 @@ fn package_runs_zb_with_ctx_env() -> Result<()> {
     assert_eq!("from dev.yaml\n", fs::read_to_string(&seen)?);
     Ok(())
 }
+
+#[test]
+fn zerobrew_apply_fails_when_the_installer_writes_no_zb() -> Result<()> {
+    let dir = tempdir()?;
+    let url = installer(&dir)?;
+    let zb = dir.path().join("bin/zb");
+    let task = ZeroBrew::default()
+        .with_install_url(&url)
+        .with_zb(&zb)
+        .with_latest_version(|_| panic!("latest version shouldn't be checked when zb is missing"))
+        .with_shell_dir(dir.path().join("shell"));
+
+    let msg = task
+        .apply(&mut capturing_ctx().0)
+        .expect_err("an installer that installs no zb should fail")
+        .to_string();
+    assert_eq!(
+        format!(
+            "the zerobrew installer ({url}) finished, but there's no zb at {}",
+            zb.display()
+        ),
+        msg
+    );
+    Ok(())
+}

@@ -46,3 +46,22 @@ fn command_applies_env() -> Result<()> {
     assert_eq!("hi there\n", String::from_utf8_lossy(&output.stdout));
     Ok(())
 }
+
+#[test]
+fn command_finds_programs_on_the_ctx_path() -> Result<()> {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let dir = tempfile::tempdir()?;
+    let probe = dir.path().join("dev-probe-xyz");
+    fs::write(&probe, "#!/bin/sh\necho found\n")?;
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o755))?;
+    let ctx = Context {
+        env: vec![("PATH".into(), format!("{}:/usr/bin:/bin", dir.path().display()))],
+        ..Context::default()
+    };
+
+    let output = ctx.command("dev-probe-xyz").output()?;
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!("found\n", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}

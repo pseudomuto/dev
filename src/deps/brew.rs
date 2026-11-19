@@ -10,7 +10,7 @@ use std::{
 use color_eyre::eyre::{WrapErr, bail, eyre};
 
 use crate::{
-    deps::{Dependency, Example, Task},
+    deps::{Dependency, Example, Task, bin},
     process,
     shell::{ShellDir, data_home, home},
 };
@@ -231,19 +231,19 @@ impl ZeroBrew {
 
     /// Runs the zerobrew installer, which installs or upgrades `zb`.
     fn install(&self, ctx: &mut crate::Context) -> crate::Result<()> {
-        // pipefail matters: without it, a failed curl pipes nothing into bash,
-        // which then exits 0 and the install looks like it succeeded.
-        let mut cmd = ctx.command("bash");
-        cmd.args([
-            "-c",
-            r#"set -o pipefail; curl -fsSL "$1" | bash -s -- --no-modify-path"#,
-            "bash",
-            &self.install_url,
-        ]);
-
-        // It may run sudo, which needs stdin for the password.
-        process::run_interactive(ctx, &mut cmd)
-            .wrap_err_with(|| format!("zerobrew installer ({}) failed", self.install_url))
+        bin::run(
+            ctx,
+            bin::Script {
+                what: "zerobrew",
+                url: &self.install_url,
+                shell: "bash",
+                args: &["--no-modify-path"],
+                env: &[],
+                // It may run sudo, which needs stdin for the password.
+                interactive: true,
+                expect: &self.zb_path()?,
+            },
+        )
     }
 }
 

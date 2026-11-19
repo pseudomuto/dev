@@ -270,7 +270,8 @@ fn cache_key_lists_the_paths_dev_reports_for_both_caches() -> Result<()> {
 
     let r = run_with_dev("cache-key", &dir, &vars)?;
     assert!(r.status.success(), "{}", r.stderr);
-    let want = action::paths(&layout(&dir, &xdg)?, Host::current(), Path::new(&dev_dir()), &work);
+    let l = layout(&dir, &xdg)?;
+    let want = action::paths(&l, Host::current(), &l.mise_bin, Path::new(&dev_dir()), &work);
     assert_eq!(want.cache, output_lines(&r.output, "cache-paths"));
     assert_eq!(want.brew_cache, output_lines(&r.output, "brew-paths"));
     let installs = data.join("mise/installs").display().to_string();
@@ -311,6 +312,22 @@ fn prune_runs_mise_with_the_project_env() -> Result<()> {
 }
 
 #[test]
+fn prune_runs_an_external_mise_on_path() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let ext = dir.path().join("ext");
+    let log = dir.path().join("log");
+    fake_logger(&ext.join("mise"), &log)?;
+    fs::create_dir_all(dir.path().join("work/.dev"))?;
+    fs::write(dir.path().join("work/.dev/mise.toml"), "[tools]\n")?;
+
+    let path = format!("{}:{}:/usr/bin:/bin", dev_dir(), ext.display());
+    let r = run("prune", &dir, &[("PATH", path.as_str())])?;
+    assert!(r.status.success(), "{}", r.stderr);
+    assert_eq!("prune --tools var=.dev/mise.toml\n", fs::read_to_string(&log)?);
+    Ok(())
+}
+
+#[test]
 fn prune_does_nothing_before_mise_is_installed() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let r = run_with_dev("prune", &dir, &[])?;
@@ -332,9 +349,11 @@ fn brew_installed_says_whether_theres_a_brew_cache_to_save() -> Result<()> {
     let r = run_with_dev("brew-installed", &dir, &vars)?;
     assert!(r.status.success(), "{}", r.stderr);
     // macOS has no brew cache (see `action::Paths::brew_cache`).
+    let l = layout(&dir, &vars)?;
     let cached = !action::paths(
-        &layout(&dir, &vars)?,
+        &l,
         Host::current(),
+        &l.mise_bin,
         Path::new(&dev_dir()),
         &dir.path().join("work"),
     )

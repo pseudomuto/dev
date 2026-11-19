@@ -26,6 +26,7 @@ pub struct Paths {
     pub path: Vec<PathEntry>,
     /// Exported to later steps, so mise's shims find the project's tools.
     pub env: BTreeMap<String, String>,
+    /// The mise `dev up` uses: one on `PATH`, else where dev installs it.
     pub mise: PathBuf,
     /// The main cache, for `actions/cache`'s `path`; `!` excludes.
     pub cache: Vec<String>,
@@ -47,9 +48,9 @@ pub enum PathEntry {
     Setup(PathBuf),
 }
 
-/// The paths for `layout` on `host`, with dev itself in `dev_dir` and the
-/// project in `project`.
-pub fn paths(layout: &Layout, host: Host, dev_dir: &Path, project: &Path) -> Paths {
+/// The paths for `layout` on `host`, with the mise `dev up` uses at `mise`,
+/// dev itself in `dev_dir`, and the project in `project`.
+pub fn paths(layout: &Layout, host: Host, mise: &Path, dev_dir: &Path, project: &Path) -> Paths {
     let shell = |name: &str| layout.shell_dir.join(name);
 
     // Later setups come first on PATH. mise's setup only works from a prompt
@@ -103,7 +104,7 @@ pub fn paths(layout: &Layout, host: Host, dev_dir: &Path, project: &Path) -> Pat
     Paths {
         path,
         env,
-        mise: layout.mise_bin.clone(),
+        mise: mise.to_path_buf(),
         cache,
         brew_cache,
         brew_root: layout.zerobrew_root.clone(),
