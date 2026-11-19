@@ -234,3 +234,19 @@ fn rust_puts_cargo_bin_on_path_for_what_comes_after() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn rustup_searches_the_ctx_path_not_the_process_one() -> Result<()> {
+    // Discriminates only on a host with rustup on its own PATH (dev's CI and
+    // dev machines): without ctx's PATH, that rustup would count as external.
+    let dir = tempdir()?;
+    let task = Rustup::default()
+        .with_cargo_home(dir.path().join("cargo"))
+        .with_shell_dir(dir.path().join("shell"))
+        .with_install_url("file:///nonexistent/installer");
+    let (mut ctx, _, _) = capturing_ctx();
+    ctx.env = vec![("PATH".into(), dir.path().join("empty").display().to_string())];
+
+    assert!(!task.is_applied(&mut ctx)?, "no rustup on ctx's PATH or in CARGO_HOME");
+    Ok(())
+}

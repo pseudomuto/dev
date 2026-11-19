@@ -8,17 +8,9 @@
 //!     - 1.99.0                # a toolchain on its own
 //! ```
 
-use std::{
-    env,
-    ffi::{OsStr, OsString},
-    fmt,
-    fs,
-    io::ErrorKind,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-};
+use std::{env, ffi::OsString, fmt, fs, io::ErrorKind, path::PathBuf};
 
-use color_eyre::eyre::{WrapErr, bail, eyre};
+use color_eyre::eyre::{WrapErr, eyre};
 use serde::{
     Deserialize,
     Deserializer,
@@ -27,7 +19,12 @@ use serde::{
 
 use crate::{
     Context,
-    deps::{Dependency, Example, Task},
+    deps::{
+        Dependency,
+        Example,
+        Task,
+        bin::{self, Found},
+    },
     process,
     shell::ShellDir,
 };
@@ -217,16 +214,6 @@ impl Default for Rustup {
     }
 }
 
-/// Which rustup to use, and who set it up.
-enum Found {
-    /// Not installed. dev will install it into `$CARGO_HOME`.
-    Missing,
-    /// In `$CARGO_HOME/bin`, where the installer puts it.
-    Managed,
-    /// Installed by something else, which set it up.
-    External,
-}
-
 impl Rustup {
     /// Looks for an existing rustup in `path` (`PATH` syntax) instead of
     /// `$PATH`.
@@ -261,19 +248,14 @@ impl Rustup {
         }
     }
 
-    fn locate(&self) -> crate::Result<Found> {
+    fn locate(&self, ctx: &Context) -> crate::Result<Found> {
         let managed = self.cargo_home()?.join("bin/rustup");
         let search = match &self.search_path {
             Some(path) => path.clone(),
-            None => env::var_os("PATH").unwrap_or_default(),
+            None => bin::search_path(ctx),
         };
 
-        Ok(match find_on_path(&search, "rustup") {
-            Some(path) if path == managed => Found::Managed,
-            Some(_) => Found::External,
-            None if is_executable(&managed) => Found::Managed,
-            None => Found::Missing,
-        })
+        Ok(bin::locate(&search, "rustup", &managed))
     }
 
     fn shell_dir(&self) -> crate::Result<ShellDir> {
@@ -293,28 +275,18 @@ impl Rustup {
     /// toolchain (the entries say which) and without touching rc files.
     fn install(&self, ctx: &mut Context) -> crate::Result<()> {
         let cargo_home = self.cargo_home()?;
-        // pipefail matters: without it, a failed curl pipes nothing into sh,
-        // which then exits 0 and the install looks like it succeeded.
-        let mut cmd = ctx.command("bash");
-        cmd.args([
-            "-c",
-            r#"set -o pipefail; curl -fsSL "$1" | sh -s -- -y --no-modify-path --default-toolchain none"#,
-            "bash",
-            &self.install_url,
-        ])
-        .env("CARGO_HOME", &cargo_home);
-
-        process::run(ctx, &mut cmd).wrap_err_with(|| format!("rustup installer ({}) failed", self.install_url))?;
-
-        let rustup = cargo_home.join("bin/rustup");
-        if !is_executable(&rustup) {
-            bail!(
-                "the rustup installer ({}) finished, but there's no rustup at {}",
-                self.install_url,
-                rustup.display()
-            );
-        }
-        Ok(())
+        bin::run(
+            ctx,
+            bin::Script {
+                what: "rustup",
+                url: &self.install_url,
+                shell: "sh",
+                args: &["-y", "--no-modify-path", "--default-toolchain", "none"],
+                env: &[("CARGO_HOME", cargo_home.as_os_str())],
+                interactive: false,
+                expect: &cargo_home.join("bin/rustup"),
+            },
+        )
     }
 }
 
@@ -326,21 +298,21 @@ impl Task for Rustup {
     /// Installs rustup when it's missing, then writes the shell setup for a
     /// rustup in `$CARGO_HOME`.
     fn apply(&self, ctx: &mut Context) -> crate::Result<()> {
-        match self.locate()? {
-            Found::External => return Ok(()),
-            Found::Missing => self.install(ctx)?,
-            Found::Managed => {}
+        match self.locate(ctx)? {
+            Found::External(_) => return Ok(()),
+            Found::Missing(_) => self.install(ctx)?,
+            Found::Managed(_) => {}
         }
         self.shell_dir()?.write(SHELL_FILE, &self.env_script()?)
     }
 
     /// Returns true if rustup is installed and, when it's in `$CARGO_HOME`,
     /// the shell setup matches its env script.
-    fn is_applied(&self, _ctx: &mut Context) -> crate::Result<bool> {
-        match self.locate()? {
-            Found::Missing => Ok(false),
-            Found::External => Ok(true),
-            Found::Managed => {
+    fn is_applied(&self, ctx: &mut Context) -> crate::Result<bool> {
+        match self.locate(ctx)? {
+            Found::Missing(_) => Ok(false),
+            Found::External(_) => Ok(true),
+            Found::Managed(_) => {
                 let setup = self.shell_dir()?.file(SHELL_FILE);
                 match fs::read_to_string(&setup) {
                     Ok(contents) => Ok(contents == self.env_script()?),
@@ -532,15 +504,4 @@ fn quoted(value: &str) -> Vec<String> {
 /// `$CARGO_HOME`, or `~/.cargo`.
 fn default_cargo_home() -> crate::Result<PathBuf> {
     crate::layout::cargo_home(&crate::layout::process)
-}
-
-fn find_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
-    env::split_paths(path)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join(name))
-        .find(|candidate| is_executable(candidate))
-}
-
-fn is_executable(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }

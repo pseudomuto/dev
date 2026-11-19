@@ -20,6 +20,7 @@ fn paths(host: Host, project: &Path) -> Result<action::Paths> {
     Ok(action::paths(
         &Layout::from_env(&env, host)?,
         host,
+        Path::new("/h/.local/bin/mise"),
         Path::new("/h/.local/bin"),
         project,
     ))
