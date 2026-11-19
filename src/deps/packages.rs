@@ -119,7 +119,9 @@ impl Packages {
             let Some(install) = Install::detect(root, eco, mode) else {
                 color_eyre::eyre::bail!(
                     "`packages` lists `{eco}`, but {} has none of its files ({})",
-                    root.display(),
+                    std::path::absolute(root)
+                        .unwrap_or_else(|_| root.to_path_buf())
+                        .display(),
                     manifests(eco).join(", ")
                 );
             };

@@ -114,7 +114,8 @@ impl Project {
     /// from `lookup`.
     ///
     /// The deps' root is the file's dir for [`Scope::Project`], and `HOME`
-    /// (from `lookup`) for [`Scope::Global`], as `${PWD}` is in the shell.
+    /// (from `lookup`) for [`Scope::Global`], where `${PWD}` is `HOME` too,
+    /// as in the shell, wherever dev runs.
     pub fn load(path: impl AsRef<Path>, scope: Scope, lookup: &Lookup<'_>) -> Result<Self> {
         let path = path.as_ref();
         let yaml = fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
@@ -128,6 +129,17 @@ impl Project {
                 Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
                 _ => PathBuf::from("."),
             },
+        };
+        // Only used for the global file, whose root is HOME from `lookup`, so
+        // nothing is lost.
+        let global_pwd = root.to_string_lossy().into_owned();
+        let global = |var: &str| match var {
+            "PWD" => Ok(global_pwd.clone()),
+            _ => lookup(var),
+        };
+        let lookup: &Lookup<'_> = match scope {
+            Scope::Global => &global,
+            Scope::Project => lookup,
         };
         Self::from_yaml(&yaml, root, scope, lookup).wrap_err_with(|| format!("invalid project file {}", path.display()))
     }

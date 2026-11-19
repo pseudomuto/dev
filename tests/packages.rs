@@ -172,6 +172,22 @@ fn only_installs_the_listed_ecosystems_in_order() -> Result<()> {
 }
 
 #[test]
+fn only_names_a_relative_root_by_its_full_path() -> Result<()> {
+    // The repo has no package.json, so `.` (where tests run) has no node files.
+    let err = Packages::only(".", &[Eco::Node], Mode::Local)
+        .err()
+        .expect("node has no files here");
+    assert_eq!(
+        format!(
+            "`packages` lists `node`, but {} has none of its files (package.json)",
+            std::env::current_dir()?.display()
+        ),
+        err.to_string()
+    );
+    Ok(())
+}
+
+#[test]
 fn ci_installs_from_the_lockfile_as_is() -> Result<()> {
     let (root, tools, mut ctx) = node_project()?;
     let packages = Packages::detect(root.path(), Mode::Ci);

@@ -464,6 +464,22 @@ fn missing_package_files_fail_building_deps_not_loading() -> Result<()> {
 }
 
 #[test]
+fn load_global_expands_pwd_to_home_wherever_it_runs() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let path = home.path().join("dev.yaml");
+    std::fs::write(&path, "env:\n  BIN: \"${PWD}/bin\"\n")?;
+    let mut env = self::home(home.path());
+    env.insert("PWD".to_string(), "/somewhere/else".to_string());
+
+    let project = Project::load(&path, Scope::Global, &vars(&env))?;
+    assert_eq!(
+        vec![("BIN".to_string(), format!("{}/bin", home.path().display()))],
+        project.env
+    );
+    Ok(())
+}
+
+#[test]
 fn load_global_needs_home_for_its_deps() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("dev.yaml");

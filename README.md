@@ -280,7 +280,7 @@ It works like a project's `dev.yaml`, except:
   `~/.config/mise/conf.d/dev.toml`. Your own global mise config wins when both pin the same tool. Like a project's,
   dev rewrites this file on every `dev up --global` to match `dev.yaml`.
 - Its deps run in `$HOME`, wherever you run `dev up --global`, so a `rust-toolchain.toml` entry reads
-  `~/rust-toolchain.toml`.
+  `~/rust-toolchain.toml`. `${PWD}` in it is `$HOME` too.
 - Project packages aren't detected next to it, and `commands` aren't run by `dev <name>`.
 
 ## Commands
