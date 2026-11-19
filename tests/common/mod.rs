@@ -14,7 +14,6 @@ use dev::{
     Context,
     Result,
     deps::{Dependency, Task, meet_tasks},
-    project::Project,
     report::{Plain, Reporter, Status},
 };
 
@@ -168,16 +167,10 @@ impl Dependency for FakeDep {
     }
 }
 
-/// A project named `demo` with `deps` and nothing else.
+/// `deps`, as `dev::up` and `dev::down` take them.
 #[allow(dead_code)]
-pub fn project(deps: Vec<FakeDep>) -> Project {
-    Project {
-        name: "demo".into(),
-        env: Vec::new(),
-        commands: Default::default(),
-        deps: deps.into_iter().map(|d| Box::new(d) as Box<dyn Dependency>).collect(),
-        tools: Vec::new(),
-    }
+pub fn deps(deps: Vec<FakeDep>) -> Vec<Box<dyn Dependency>> {
+    deps.into_iter().map(|d| Box::new(d) as Box<dyn Dependency>).collect()
 }
 
 /// Every call a [`Recorder`] got, e.g. `["0 a checking", "output hi"]`.

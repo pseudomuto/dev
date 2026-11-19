@@ -29,7 +29,10 @@ use std::{
 use color_eyre::eyre::{WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, project::Project};
+use crate::{
+    Result,
+    project::{Project, Scope},
+};
 
 /// The exported var holding the applied [`State`] as JSON. Must match
 /// `share/shell`.
@@ -56,10 +59,9 @@ pub struct Layer {
     pub root: PathBuf,
     /// Nanoseconds since the epoch. A change means the file was edited.
     pub modified: u64,
-    /// Whether this is the user's global file, read with
-    /// [`Project::load_global_with`]. Defaults to false for state saved by
-    /// older releases, which then differs from the layers found now, so the
-    /// shell just re-renders once.
+    /// Whether this is the user's global file, loaded in [`Scope::Global`].
+    /// Defaults to false for state saved by older releases, which then
+    /// differs from the layers found now, so the shell just re-renders once.
     #[serde(default)]
     pub global: bool,
 }
@@ -181,11 +183,8 @@ pub fn render(env: &BTreeMap<String, String>, state: Option<&State>, layers: Vec
                 .ok_or_else(|| VarError::NotUnicode(layer.root.clone().into_os_string())),
             _ => current.get(var).cloned().ok_or(VarError::NotPresent),
         };
-        let project = if layer.global {
-            Project::load_global_with(&layer.path, &lookup)?
-        } else {
-            Project::load_with(&layer.path, &lookup)?
-        };
+        let scope = if layer.global { Scope::Global } else { Scope::Project };
+        let project = Project::load(&layer.path, scope, &lookup)?;
 
         for (name, value) in project.env {
             if !is_identifier(&name) {

@@ -256,6 +256,17 @@ fn names_that_sh_cant_export_fail() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn env_loads_even_when_the_deps_cant_be_met_here() -> Result<()> {
+    let mut sh = Shell::new()?;
+    // No package.json next to it, so `dev up` would fail, but env is fine.
+    sh.project("proj", "name: proj\nenv:\n  GREETING: hi\ndeps:\n  packages: [node]\n")?;
+
+    sh.cd(&sh.path("proj"))?;
+    assert_eq!(Some("hi"), sh.get("GREETING"));
+    Ok(())
+}
+
 /// Sources `share/shell` in a real `sh` with the built `dev` on `PATH`.
 #[test]
 #[allow(clippy::disallowed_methods)]

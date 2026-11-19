@@ -3,11 +3,11 @@ use color_eyre::eyre::WrapErr;
 use crate::{
     Context,
     Result,
-    project::Project,
+    deps::Dependency,
     report::{self, Status},
 };
 
-/// Meets every dependency in `project` that isn't already met, in order,
+/// Meets every dependency in `deps` that isn't already met, in order,
 /// reporting each one's progress to `ctx.reporter` as a step at depth 0. With
 /// the [`Plain`](crate::report::Plain) reporter that reads:
 ///
@@ -21,8 +21,8 @@ use crate::{
 /// [`meet_tasks`](crate::deps::meet_tasks).
 ///
 /// Stops at the first failure.
-pub fn up(ctx: &mut Context, project: &Project) -> Result<()> {
-    for dep in &project.deps {
+pub fn up(ctx: &mut Context, deps: &[Box<dyn Dependency>]) -> Result<()> {
+    for dep in deps {
         let name = dep.name();
         report::step(ctx, 0, name, Status::Checking)?;
         let met = dep.is_met(ctx);

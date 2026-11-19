@@ -1,12 +1,19 @@
+use std::collections::BTreeMap;
+
 use dev::{
     Result,
     commands::{Arg, Flag, FlagKind, ProjectCommand, Script},
-    project::Project,
+    project::{Project, Scope, vars},
 };
+
+/// Parses `yaml` as a project in the current dir, with no env vars set.
+fn parse(yaml: &str) -> Result<Project> {
+    Project::from_yaml(yaml, ".", Scope::Project, &vars(&BTreeMap::new()))
+}
 
 /// The command `name` from a dev.yaml whose `commands` section is `yaml`.
 fn command(yaml: &str, name: &str) -> Result<ProjectCommand> {
-    let mut project = Project::from_yaml(&format!("name: demo\ncommands:\n{yaml}"))?;
+    let mut project = parse(&format!("name: demo\ncommands:\n{yaml}"))?;
     Ok(project.commands.remove(name).expect("the command should be parsed"))
 }
 
@@ -134,9 +141,7 @@ fn long_form_rejects_invalid_specs() {
 
     for (spec, want) in cases {
         let yaml = format!("name: demo\ncommands:\n  c:\n    {spec}\n");
-        let err = Project::from_yaml(&yaml)
-            .err()
-            .unwrap_or_else(|| panic!("should fail:\n{yaml}"));
+        let err = parse(&yaml).err().unwrap_or_else(|| panic!("should fail:\n{yaml}"));
         let err = err.to_string();
         assert!(err.contains(want), "want `{want}` in error for:\n{yaml}\ngot: {err}");
     }

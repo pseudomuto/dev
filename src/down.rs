@@ -3,11 +3,11 @@ use color_eyre::eyre::WrapErr;
 use crate::{
     Context,
     Result,
-    project::Project,
+    deps::Dependency,
     report::{self, Status},
 };
 
-/// Takes down every dependency in `project`, in reverse order, so each one
+/// Takes down every dependency in `deps`, in reverse order, so each one
 /// goes before the dependencies listed ahead of it (which it may rely on).
 /// Reports each one to `ctx.reporter` once it's done, which the
 /// [`Plain`](crate::report::Plain) reporter prints as:
@@ -17,8 +17,8 @@ use crate::{
 /// ```
 ///
 /// Stops at the first failure.
-pub fn down(ctx: &mut Context, project: &Project) -> Result<()> {
-    for dep in project.deps.iter().rev() {
+pub fn down(ctx: &mut Context, deps: &[Box<dyn Dependency>]) -> Result<()> {
+    for dep in deps.iter().rev() {
         let name = dep.name();
         report::step(ctx, 0, name, Status::TakingDown)?;
         let res = dep.down(ctx);
