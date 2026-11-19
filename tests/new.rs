@@ -2,8 +2,9 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
 use dev::{
     Result,
+    deps::packages::Mode,
     new::{Templates, dev_ref},
-    project::Project,
+    project::{Project, Scope, process_env},
 };
 use tempfile::TempDir;
 
@@ -195,7 +196,8 @@ fn built_in_templates_render_valid_projects() -> Result<()> {
             "template {name}'s notes left a placeholder:\n{notes}"
         );
 
-        let project = Project::load(dest.join("dev.yaml"))?;
+        let project = Project::load(dest.join("dev.yaml"), Scope::Project, &process_env())?;
+        project.deps(Mode::Local)?;
         assert_eq!(project.name, "my-app", "template {name}");
         assert!(dest.join(".gitignore").exists(), "template {name} has no .gitignore");
         assert!(

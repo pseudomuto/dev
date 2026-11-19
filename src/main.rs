@@ -12,8 +12,9 @@ use color_eyre::{
 };
 use dev::{
     Context,
+    deps::packages::Mode,
     new::{self, Templates},
-    project::Project,
+    project::{Project, Scope, process_env},
     report::{Plain, Reporter, clack::Clack},
     run_log::{self, RunLog},
     shell,
@@ -74,7 +75,7 @@ enum Command {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = parse_cli();
-    let vars = process_env()?;
+    let vars = process_vars()?;
 
     // The template's notes, printed once `dev new` has run `dev up`.
     let mut notes = None;
@@ -132,18 +133,18 @@ async fn main() -> Result<()> {
     };
 
     let project = match cli.command {
-        Command::Up { global: true } => Project::load_global(&file)?,
+        Command::Up { global: true } => Project::load(&file, Scope::Global, &process_env())?,
         // The shell's `$PWD` is still the parent dir, but `${PWD}` in
         // dev.yaml must be the new project's.
         Command::New { .. } => {
             let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
             let cwd = cwd.to_string_lossy().into_owned();
-            Project::load_with(PROJECT_FILE, &|var| match var {
+            Project::load(PROJECT_FILE, Scope::Project, &|var| match var {
                 "PWD" => Ok(cwd.clone()),
                 _ => env::var(var),
             })?
         }
-        _ => Project::load(PROJECT_FILE)?,
+        _ => Project::load(PROJECT_FILE, Scope::Project, &process_env())?,
     };
     reject_built_in_names(&project)?;
 
@@ -165,11 +166,11 @@ async fn main() -> Result<()> {
             unreachable!("handled before loading dev.yaml")
         }
         Command::Up { .. } => with_run_log(&mut ctx, logs.as_deref(), "up", &project.name, |ctx| {
-            dev::up(ctx, &project)
+            dev::up(ctx, &project.deps(Mode::from_env())?)
         })?,
         Command::New { name, .. } => {
             let up = with_run_log(&mut ctx, logs.as_deref(), "up", &project.name, |ctx| {
-                dev::up(ctx, &project)
+                dev::up(ctx, &project.deps(Mode::from_env())?)
             });
             if up.is_ok() {
                 println!("\nCreated {name}. Next: cd {name}");
@@ -181,7 +182,7 @@ async fn main() -> Result<()> {
             up.with_note(|| format!("{name} was created; run `dev up` in it to try again"))?;
         }
         Command::Down => with_run_log(&mut ctx, logs.as_deref(), "down", &project.name, |ctx| {
-            dev::down(ctx, &project)
+            dev::down(ctx, &project.deps(Mode::from_env())?)
         })?,
         Command::Project(args) => {
             let (name, args) = args.split_first().expect("clap passes the command name first");
@@ -232,7 +233,7 @@ fn parse_cli() -> Cli {
         err.exit();
     }
 
-    let loaded = Project::load(PROJECT_FILE);
+    let loaded = Project::load(PROJECT_FILE, Scope::Project, &process_env());
     let mut cmd = Cli::command();
     if let Some(help) = project_commands_help(&cmd, &loaded) {
         cmd = cmd.after_help(help);
@@ -322,7 +323,7 @@ fn reporter() -> Result<Box<dyn Reporter>> {
 
 /// The process env, skipping vars that aren't UTF-8. `PWD` falls back to the
 /// current directory when the shell didn't set it.
-fn process_env() -> Result<BTreeMap<String, String>> {
+fn process_vars() -> Result<BTreeMap<String, String>> {
     let mut vars: BTreeMap<String, String> = env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .collect();

@@ -1,8 +1,41 @@
-use dev::{Result, commands::Script, deps::mise::ToolSpec, project::Project};
+use std::collections::BTreeMap;
+
+use dev::{
+    Result,
+    commands::Script,
+    deps::{Dependency, mise::ToolSpec, packages::Mode},
+    project::{Project, Scope, vars},
+};
+
+/// A project dir that doesn't exist, so building deps finds no packages.
+const ROOT: &str = "/nonexistent/dev-test/demo";
+
+/// Parses `yaml` as a project's dev.yaml in [`ROOT`], with no env vars set.
+fn parse(yaml: &str) -> Result<Project> {
+    Project::from_yaml(yaml, ROOT, Scope::Project, &vars(&BTreeMap::new()))
+}
+
+/// An env with only `HOME` set, to `dir`.
+fn home(dir: &std::path::Path) -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        "HOME".to_string(),
+        dir.to_str().expect("temp paths are UTF-8").to_string(),
+    )])
+}
+
+/// The names of `deps`.
+fn names(deps: &[Box<dyn Dependency>]) -> Vec<&str> {
+    deps.iter().map(|d| d.name()).collect()
+}
+
+/// The names of the tasks of `dep`.
+fn tasks(dep: &dyn Dependency) -> Vec<&str> {
+    dep.tasks().iter().map(|t| t.name()).collect()
+}
 
 #[test]
 fn from_yaml_parses_name_and_brew_dep() -> Result<()> {
-    let project = Project::from_yaml(
+    let project = parse(
         r#"
 name: demo-project
 deps:
@@ -13,17 +46,18 @@ deps:
     )?;
 
     assert_eq!("demo-project", project.name);
-    let names: Vec<&str> = project.deps.iter().map(|d| d.name()).collect();
+    let deps = project.deps(Mode::Local)?;
+    let names = names(&deps);
     assert_eq!(vec!["Install brew dependencies"], names);
 
-    let tasks: Vec<&str> = project.deps[0].tasks().iter().map(|t| t.name()).collect();
+    let tasks = tasks(deps[0].as_ref());
     assert_eq!(vec!["Install zerobrew", "Installing jq", "Installing yq"], tasks);
     Ok(())
 }
 
 #[test]
 fn from_yaml_parses_other_deps_as_one_tools_dep_where_the_first_appears() -> Result<()> {
-    let project = Project::from_yaml(
+    let project = parse(
         r#"
 name: demo
 deps:
@@ -34,10 +68,11 @@ deps:
 "#,
     )?;
 
-    let names: Vec<&str> = project.deps.iter().map(|d| d.name()).collect();
+    let deps = project.deps(Mode::Local)?;
+    let names = names(&deps);
     assert_eq!(vec!["Install tools", "Install brew dependencies"], names);
 
-    let tasks: Vec<&str> = project.deps[0].tasks().iter().map(|t| t.name()).collect();
+    let tasks = tasks(deps[0].as_ref());
     assert_eq!(
         vec![
             "Install mise",
@@ -52,7 +87,7 @@ deps:
 }
 
 fn project_named(name: &str) -> Result<Project> {
-    Project::from_yaml(&format!("name: {name:?}\n"))
+    parse(&format!("name: {name:?}\n"))
 }
 
 #[test]
@@ -89,7 +124,7 @@ fn from_yaml_rejects_names_that_are_not_lowercase_dashed() {
 #[test]
 fn from_yaml_rejects_reserved_dependencies() {
     let yaml = "name: demo\ndeps:\n  brew: [jq]\n  custom: []\n";
-    let msg = match Project::from_yaml(yaml) {
+    let msg = match parse(yaml) {
         Ok(_) => panic!("expected `custom` to be rejected"),
         Err(e) => e.to_string(),
     };
@@ -102,7 +137,7 @@ fn from_yaml_rejects_reserved_dependencies() {
 
 #[test]
 fn from_yaml_rejects_tools_without_a_version_string() {
-    let msg = match Project::from_yaml("name: demo\ndeps:\n  node: [22, 24]\n") {
+    let msg = match parse("name: demo\ndeps:\n  node: [22, 24]\n") {
         Ok(_) => panic!("expected a list of versions to be rejected"),
         Err(e) => e.to_string(),
     };
@@ -114,7 +149,7 @@ fn from_yaml_rejects_tools_without_a_version_string() {
 
 #[test]
 fn from_yaml_rejects_unknown_top_level_fields() {
-    let msg = match Project::from_yaml("name: demo\ndpes:\n  brew: [jq]\n") {
+    let msg = match parse("name: demo\ndpes:\n  brew: [jq]\n") {
         Ok(_) => panic!("expected the `dpes` typo to be rejected"),
         Err(e) => e.to_string(),
     };
@@ -127,9 +162,9 @@ fn load_reads_project_file() -> Result<()> {
     let path = dir.path().join("dev.yaml");
     std::fs::write(&path, "name: demo\ndeps:\n  brew: [jq]\n")?;
 
-    let project = Project::load(&path)?;
+    let project = Project::load(&path, Scope::Project, &vars(&BTreeMap::new()))?;
     assert_eq!("demo", project.name);
-    assert_eq!(1, project.deps.len());
+    assert_eq!(1, project.deps(Mode::Local)?.len());
     Ok(())
 }
 
@@ -138,18 +173,22 @@ fn load_errors_name_the_file() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("dev.yaml");
 
-    let missing = Project::load(&path).err().expect("a missing file should fail");
+    let missing = Project::load(&path, Scope::Project, &vars(&BTreeMap::new()))
+        .err()
+        .expect("a missing file should fail");
     assert_eq!(format!("failed to read {}", path.display()), missing.to_string());
 
     std::fs::write(&path, "name: Demo\n")?;
-    let invalid = Project::load(&path).err().expect("an invalid name should fail");
+    let invalid = Project::load(&path, Scope::Project, &vars(&BTreeMap::new()))
+        .err()
+        .expect("an invalid name should fail");
     assert_eq!(format!("invalid project file {}", path.display()), invalid.to_string());
     Ok(())
 }
 
 #[test]
 fn from_yaml_parses_env_and_commands() -> Result<()> {
-    let project = Project::from_yaml(
+    let project = parse(
         r#"
 name: demo
 env:
@@ -175,7 +214,7 @@ commands:
 
 #[test]
 fn from_yaml_defaults_env_and_commands_to_empty() -> Result<()> {
-    let project = Project::from_yaml("name: demo\n")?;
+    let project = parse("name: demo\n")?;
     assert!(project.env.is_empty());
     assert!(project.commands.is_empty());
     Ok(())
@@ -183,16 +222,17 @@ fn from_yaml_defaults_env_and_commands_to_empty() -> Result<()> {
 
 #[test]
 fn from_yaml_expands_braced_vars_in_env() -> Result<()> {
-    let home = std::env::var("HOME")?;
-    let project = Project::from_yaml("name: demo\nenv:\n  BIN: \"${HOME}/bin:$HOME\"\n")?;
+    let env = BTreeMap::from([("HOME".to_string(), "/home/me".to_string())]);
+    let yaml = "name: demo\nenv:\n  BIN: \"${HOME}/bin:$HOME\"\n";
+    let project = Project::from_yaml(yaml, ROOT, Scope::Project, &vars(&env))?;
 
-    assert_eq!(vec![("BIN".to_string(), format!("{home}/bin:$HOME"))], project.env);
+    assert_eq!(vec![("BIN".to_string(), "/home/me/bin:$HOME".to_string())], project.env);
     Ok(())
 }
 
 #[test]
 fn from_yaml_fails_on_unset_vars_in_env() {
-    let err = Project::from_yaml("name: demo\nenv:\n  A: \"${DEV_TEST_UNSET_6F1C}/x\"\n")
+    let err = parse("name: demo\nenv:\n  A: \"${DEV_TEST_UNSET_6F1C}/x\"\n")
         .err()
         .expect("an unset var should fail");
     assert_eq!(
@@ -203,22 +243,27 @@ fn from_yaml_fails_on_unset_vars_in_env() {
 
 #[test]
 fn from_yaml_fails_on_unclosed_braces_in_env() {
-    let err = Project::from_yaml("name: demo\nenv:\n  A: \"${HOME/x\"\n")
+    let err = parse("name: demo\nenv:\n  A: \"${HOME/x\"\n")
         .err()
         .expect("an unclosed `${` should fail");
     assert_eq!("env `A` has a `${` with no closing `}`", err.to_string());
 }
 
 #[test]
-fn from_yaml_with_expands_from_the_given_lookup() -> Result<()> {
+fn from_yaml_expands_from_the_given_lookup() -> Result<()> {
     let lookup = |var: &str| match var {
         "ROOT" => Ok("/proj".to_string()),
         _ => Err(std::env::VarError::NotPresent),
     };
-    let project = Project::from_yaml_with("name: demo\nenv:\n  BIN: \"${ROOT}/bin\"\n", &lookup)?;
+    let project = Project::from_yaml(
+        "name: demo\nenv:\n  BIN: \"${ROOT}/bin\"\n",
+        ROOT,
+        Scope::Project,
+        &lookup,
+    )?;
     assert_eq!(vec![("BIN".to_string(), "/proj/bin".to_string())], project.env);
 
-    let err = Project::from_yaml_with("name: demo\nenv:\n  A: \"${HOME}\"\n", &lookup)
+    let err = Project::from_yaml("name: demo\nenv:\n  A: \"${HOME}\"\n", ROOT, Scope::Project, &lookup)
         .err()
         .expect("vars missing from the lookup should fail, even if the process has them");
     assert_eq!("env `A` references `${HOME}`, which isn't set", err.to_string());
@@ -233,7 +278,12 @@ fn expand_with(value: &str, vars: &[(&str, &str)]) -> Result<String> {
             .map(|(_, val)| val.to_string())
             .ok_or(std::env::VarError::NotPresent)
     };
-    let mut project = Project::from_yaml_with(&format!("name: demo\nenv:\n  A: {value:?}\n"), &lookup)?;
+    let mut project = Project::from_yaml(
+        &format!("name: demo\nenv:\n  A: {value:?}\n"),
+        ROOT,
+        Scope::Project,
+        &lookup,
+    )?;
     Ok(project.env.remove(0).1)
 }
 
@@ -274,7 +324,7 @@ fn from_yaml_fails_on_vars_inside_a_default() {
 
 #[test]
 fn from_yaml_parses_rust_toolchains_as_their_own_dependency() -> Result<()> {
-    let project = Project::from_yaml(
+    let project = parse(
         r#"
 name: demo
 deps:
@@ -285,9 +335,10 @@ deps:
 "#,
     )?;
 
-    let names: Vec<&str> = project.deps.iter().map(|d| d.name()).collect();
+    let deps = project.deps(Mode::Local)?;
+    let names = names(&deps);
     assert_eq!(vec!["Install Rust"], names, "not a mise tool");
-    let tasks: Vec<&str> = project.deps[0].tasks().iter().map(|t| t.name()).collect();
+    let tasks = tasks(deps[0].as_ref());
     assert_eq!(
         vec![
             "Install rustup",
@@ -315,9 +366,7 @@ fn from_yaml_rejects_unclear_rust_entries() {
     ];
     for (entries, want) in cases {
         let yaml = format!("name: demo\ndeps:\n  rust:\n    {entries}\n");
-        let err = Project::from_yaml(&yaml)
-            .err()
-            .unwrap_or_else(|| panic!("should fail:\n{yaml}"));
+        let err = parse(&yaml).err().unwrap_or_else(|| panic!("should fail:\n{yaml}"));
         let err = format!("{err:#}");
         assert!(err.contains(want), "want `{want}` for:\n{yaml}\ngot: {err}");
     }
@@ -330,8 +379,11 @@ fn deps_in(yaml: &str, files: &[&str]) -> Result<Vec<String>> {
     for file in files {
         std::fs::write(dir.path().join(file), "")?;
     }
-    let project = Project::from_yaml_at(yaml, dir.path(), &|var| std::env::var(var))?;
-    Ok(project.deps.iter().map(|d| d.name().to_string()).collect())
+    let project = Project::from_yaml(yaml, dir.path(), Scope::Project, &vars(&BTreeMap::new()))?;
+    Ok(names(&project.deps(Mode::Local)?)
+        .into_iter()
+        .map(String::from)
+        .collect())
 }
 
 #[test]
@@ -395,8 +447,69 @@ fn rejects_bad_packages_settings() -> Result<()> {
 }
 
 #[test]
+fn missing_package_files_fail_building_deps_not_loading() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("dev.yaml");
+    std::fs::write(&path, "name: demo\nenv:\n  A: a\ndeps:\n  packages: [node]\n")?;
+
+    let project = Project::load(&path, Scope::Project, &vars(&BTreeMap::new()))?;
+    assert_eq!(vec![("A".to_string(), "a".to_string())], project.env);
+
+    let err = project.deps(Mode::Local).err().expect("node has no package.json here");
+    assert!(
+        err.to_string().contains("has none of its files (package.json)"),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn load_global_needs_home_for_its_deps() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("dev.yaml");
+    std::fs::write(&path, "deps:\n  node: lts\n")?;
+
+    let err = Project::load(&path, Scope::Global, &vars(&BTreeMap::new()))
+        .err()
+        .expect("the global deps run in HOME");
+    assert_eq!(
+        format!("HOME is not set, so the deps in {} have nowhere to run", path.display()),
+        err.to_string()
+    );
+    Ok(())
+}
+
+#[test]
+fn load_global_runs_rust_in_home_not_the_current_dir() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let path = home.path().join("dev.yaml");
+    std::fs::write(&path, "deps:\n  rust: [rust-toolchain.toml]\n")?;
+    // Unreadable as a toolchain, so checking it fails before rustup runs.
+    let toolchain = home.path().join("rust-toolchain.toml");
+    std::fs::write(&toolchain, "not toml")?;
+
+    let project = Project::load(&path, Scope::Global, &vars(&self::home(home.path())))?;
+    let deps = project.deps(Mode::Local)?;
+    let check = &deps[0].tasks()[1];
+    assert_eq!("Installing the toolchain in rust-toolchain.toml", check.name());
+
+    // No rustup to find, in case the toolchain is read from somewhere else.
+    let empty = tempfile::tempdir()?;
+    let mut ctx = dev::Context {
+        env: vec![("PATH".to_string(), empty.path().display().to_string())],
+        ..dev::Context::default()
+    };
+    let err = check.is_applied(&mut ctx).expect_err("the toolchain file is invalid");
+    assert_eq!(
+        format!("can't tell which toolchain {} names", toolchain.display()),
+        err.to_string()
+    );
+    Ok(())
+}
+
+#[test]
 fn from_yaml_points_mise_at_the_project_config_when_there_are_tools() -> Result<()> {
-    let project = Project::from_yaml("name: demo\nenv:\n  A: a\n  Z: z\ndeps:\n  node: lts\n")?;
+    let project = parse("name: demo\nenv:\n  A: a\n  Z: z\ndeps:\n  node: lts\n")?;
     assert_eq!(
         vec![
             ("A".to_string(), "a".to_string()),
@@ -406,14 +519,14 @@ fn from_yaml_points_mise_at_the_project_config_when_there_are_tools() -> Result<
         project.env
     );
 
-    let project = Project::from_yaml("name: demo\ndeps:\n  brew: [jq]\n")?;
+    let project = parse("name: demo\ndeps:\n  brew: [jq]\n")?;
     assert!(project.env.is_empty(), "no tools, so mise needs no project config");
     Ok(())
 }
 
 #[test]
 fn from_yaml_rejects_the_mise_config_var_in_env() {
-    let err = Project::from_yaml("name: demo\nenv:\n  MISE_DEFAULT_CONFIG_FILENAME: x.toml\n")
+    let err = parse("name: demo\nenv:\n  MISE_DEFAULT_CONFIG_FILENAME: x.toml\n")
         .err()
         .expect("dev owns that var");
     assert_eq!(
@@ -428,14 +541,15 @@ fn load_writes_tools_to_the_project_mise_config() -> Result<()> {
     let path = dir.path().join("dev.yaml");
     std::fs::write(&path, "name: demo\ndeps:\n  node: lts\n")?;
 
-    let project = Project::load(&path)?;
+    let project = Project::load(&path, Scope::Project, &vars(&BTreeMap::new()))?;
     // Guard: a project whose tools are still global would write to the real
     // ~/.config below.
     assert!(
         project.env.iter().any(|(k, _)| k == "MISE_DEFAULT_CONFIG_FILENAME"),
         "tools should be in project scope"
     );
-    let config = project.deps[0]
+    let deps = project.deps(Mode::Local)?;
+    let config = deps[0]
         .tasks()
         .iter()
         .find(|t| t.name() == "Configure tools")
@@ -453,7 +567,9 @@ fn load_requires_a_project_name() -> Result<()> {
     let path = dir.path().join("dev.yaml");
     std::fs::write(&path, "deps:\n  brew: [jq]\n")?;
 
-    let err = Project::load(&path).err().expect("a project needs a name");
+    let err = Project::load(&path, Scope::Project, &vars(&BTreeMap::new()))
+        .err()
+        .expect("a project needs a name");
     assert_eq!(
         "`name` is required, e.g. `name: demo-project`",
         err.root_cause().to_string()
@@ -468,14 +584,15 @@ fn load_global_needs_no_name_and_detects_no_packages() -> Result<()> {
     std::fs::write(dir.path().join("package.json"), "{}")?;
     std::fs::write(&path, "env:\n  A: a\ndeps:\n  node: lts\n")?;
 
-    let project = Project::load_global(&path)?;
+    let project = Project::load(&path, Scope::Global, &vars(&home(dir.path())))?;
     assert_eq!("global", project.name);
     assert_eq!(
         vec![("A".to_string(), "a".to_string())],
         project.env,
         "global tools need no var"
     );
-    let names: Vec<&str> = project.deps.iter().map(|d| d.name()).collect();
+    let deps = project.deps(Mode::Local)?;
+    let names = names(&deps);
     assert_eq!(vec!["Install tools"], names);
     Ok(())
 }
@@ -486,7 +603,9 @@ fn load_global_still_checks_a_name_when_given() -> Result<()> {
     let path = dir.path().join("dev.yaml");
     std::fs::write(&path, "name: Mine\n")?;
 
-    let err = Project::load_global(&path).err().expect("an invalid name should fail");
+    let err = Project::load(&path, Scope::Global, &vars(&home(dir.path())))
+        .err()
+        .expect("an invalid name should fail");
     assert_eq!(format!("invalid project file {}", path.display()), err.to_string());
     Ok(())
 }
@@ -494,8 +613,9 @@ fn load_global_still_checks_a_name_when_given() -> Result<()> {
 #[test]
 fn from_yaml_parses_tool_options_keeping_values_as_written() -> Result<()> {
     let yaml = "name: demo\ndeps:\n  aws: { version: 2.30, symlink_bins: true, level: 3.10 }\n  python: 3.10\n";
-    let project = Project::from_yaml(yaml)?;
-    let tasks: Vec<&str> = project.deps[0].tasks().iter().map(|t| t.name()).collect();
+    let project = parse(yaml)?;
+    let deps = project.deps(Mode::Local)?;
+    let tasks = tasks(deps[0].as_ref());
     assert_eq!(
         vec![
             "Install mise",
@@ -519,7 +639,7 @@ fn from_yaml_parses_tool_options_keeping_values_as_written() -> Result<()> {
 }
 
 fn tools_error(deps: &str) -> String {
-    match Project::from_yaml(&format!("name: demo\ndeps:\n{deps}")) {
+    match parse(&format!("name: demo\ndeps:\n{deps}")) {
         Ok(_) => panic!("expected {deps:?} to be rejected"),
         Err(e) => e.to_string(),
     }
@@ -567,7 +687,7 @@ fn from_yaml_reads_plain_versions_back_exactly_after_unicode_comments_and_aliase
             ToolSpec::new("ruby", "3.40"),
             ToolSpec::new("aws", "3.40").with_option("level", "1.0"),
         ],
-        Project::from_yaml(yaml)?.tools
+        parse(yaml)?.tools
     );
     Ok(())
 }

@@ -107,13 +107,15 @@ pub struct Rust {
 }
 
 impl Rust {
-    /// Creates a dependency that installs rustup, then `entries` in order.
-    pub fn new(entries: Vec<Entry>) -> Self {
+    /// Creates a dependency that installs rustup, then `entries` in order,
+    /// reading `rust-toolchain.toml` from, and running rustup in, `dir`.
+    pub fn new(dir: impl Into<PathBuf>, entries: Vec<Entry>) -> Self {
+        let dir = dir.into();
         let mut tasks: Vec<Box<dyn Task>> = vec![Box::new(Rustup::default())];
         tasks.extend(
             entries
                 .into_iter()
-                .map(|entry| Box::new(Toolchain::new(entry)) as Box<dyn Task>),
+                .map(|entry| Box::new(Toolchain::new(entry).with_dir(&dir)) as Box<dyn Task>),
         );
         Self::with_tasks(tasks)
     }

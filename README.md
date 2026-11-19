@@ -186,7 +186,8 @@ deps:
 
   "Out of date" means the manifest, lockfile, or runtime version (e.g. `node --version`) changed since the last install,
   or `node_modules` / `.venv` is gone. The runtime has to be on `PATH`, e.g. `node: lts` under `deps`. `packages: false`
-  turns this off; `packages: [node, ruby]` installs only those, at that spot in `deps`.
+  turns this off; `packages: [node, ruby]` installs only those, at that spot in `deps`. `dev up` fails if one of them
+  has none of its files, though the project's env and commands still work.
 
   When `CI` is set (as CI services do), installs use the lockfile as is and fail if it's out of date: `npm ci`,
   `--frozen-lockfile` for yarn, pnpm, and bun, `BUNDLE_FROZEN=true`, `cargo fetch --locked`, and `uv sync --locked`. An
@@ -278,6 +279,8 @@ It works like a project's `dev.yaml`, except:
 - Tools go to dev's global mise config, `~/.config/dev/mise.toml`, which mise loads everywhere through a link at
   `~/.config/mise/conf.d/dev.toml`. Your own global mise config wins when both pin the same tool. Like a project's,
   dev rewrites this file on every `dev up --global` to match `dev.yaml`.
+- Its deps run in `$HOME`, wherever you run `dev up --global`, so a `rust-toolchain.toml` entry reads
+  `~/rust-toolchain.toml`.
 - Project packages aren't detected next to it, and `commands` aren't run by `dev <name>`.
 
 ## Commands

@@ -1,16 +1,16 @@
 mod common;
 
-use common::{FakeDep, FakeTask, Log, capturing_ctx, project, recording_ctx};
+use common::{FakeDep, FakeTask, Log, capturing_ctx, deps, recording_ctx};
 use dev::Result;
 
 #[test]
 fn up_skips_dependencies_that_are_met() -> Result<()> {
     let log = Log::default();
     let task = FakeTask::new("t", false, &log);
-    let project = project(vec![FakeDep::new("a", true, &log).with_tasks(vec![task])]);
+    let deps = deps(vec![FakeDep::new("a", true, &log).with_tasks(vec![task])]);
     let (mut ctx, out, _) = capturing_ctx();
 
-    dev::up(&mut ctx, &project)?;
+    dev::up(&mut ctx, &deps)?;
     assert_eq!("a ... met\n", out.to_string());
     assert_eq!(vec!["check dep a"], *log.borrow());
     Ok(())
@@ -20,10 +20,10 @@ fn up_skips_dependencies_that_are_met() -> Result<()> {
 fn up_applies_unapplied_tasks_with_indented_status() -> Result<()> {
     let log = Log::default();
     let tasks = vec![FakeTask::new("t1", true, &log), FakeTask::new("t2", false, &log)];
-    let project = project(vec![FakeDep::new("a", false, &log).with_tasks(tasks)]);
+    let deps = deps(vec![FakeDep::new("a", false, &log).with_tasks(tasks)]);
     let (mut ctx, out, _) = capturing_ctx();
 
-    dev::up(&mut ctx, &project)?;
+    dev::up(&mut ctx, &deps)?;
     assert_eq!("a ... applying\n  t1 ... met\n  t2 ... applying\n", out.to_string());
     assert_eq!(
         vec!["check dep a", "meet a", "check t1", "check t2", "apply t2"],
@@ -35,10 +35,10 @@ fn up_applies_unapplied_tasks_with_indented_status() -> Result<()> {
 #[test]
 fn up_meets_dependencies_without_tasks_in_order() -> Result<()> {
     let log = Log::default();
-    let project = project(vec![FakeDep::new("a", false, &log), FakeDep::new("b", true, &log)]);
+    let deps = deps(vec![FakeDep::new("a", false, &log), FakeDep::new("b", true, &log)]);
     let (mut ctx, out, _) = capturing_ctx();
 
-    dev::up(&mut ctx, &project)?;
+    dev::up(&mut ctx, &deps)?;
     assert_eq!("a ... applying\nb ... met\n", out.to_string());
     assert_eq!(vec!["check dep a", "meet a", "check dep b"], *log.borrow());
     Ok(())
@@ -51,13 +51,13 @@ fn up_stops_at_first_failure() {
         FakeTask::new("t1", false, &log).failing_apply(),
         FakeTask::new("t2", false, &log),
     ];
-    let project = project(vec![
+    let deps = deps(vec![
         FakeDep::new("a", false, &log).with_tasks(tasks),
         FakeDep::new("b", false, &log),
     ]);
     let (mut ctx, out, _) = capturing_ctx();
 
-    let err = dev::up(&mut ctx, &project).expect_err("a failing task should fail up");
+    let err = dev::up(&mut ctx, &deps).expect_err("a failing task should fail up");
     let chain: Vec<String> = err.chain().map(ToString::to_string).collect();
 
     assert_eq!(vec!["dependency failed: a", "task failed: t1", "boom"], chain);
@@ -69,13 +69,13 @@ fn up_stops_at_first_failure() {
 fn up_reports_each_step_from_checking_to_done() -> Result<()> {
     let log = Log::default();
     let tasks = vec![FakeTask::new("t1", true, &log), FakeTask::new("t2", false, &log)];
-    let project = project(vec![
+    let deps = deps(vec![
         FakeDep::new("a", false, &log).with_tasks(tasks),
         FakeDep::new("b", true, &log),
     ]);
     let (mut ctx, events) = recording_ctx();
 
-    dev::up(&mut ctx, &project)?;
+    dev::up(&mut ctx, &deps)?;
     assert_eq!(
         vec![
             "0 a checking",
@@ -98,13 +98,13 @@ fn up_reports_each_step_from_checking_to_done() -> Result<()> {
 fn up_reports_a_failing_task_and_its_dependency_as_failed() {
     let log = Log::default();
     let tasks = vec![FakeTask::new("t1", false, &log).failing_apply()];
-    let project = project(vec![
+    let deps = deps(vec![
         FakeDep::new("a", false, &log).with_tasks(tasks),
         FakeDep::new("b", false, &log),
     ]);
     let (mut ctx, events) = recording_ctx();
 
-    let err = dev::up(&mut ctx, &project).expect_err("a failing task should fail up");
+    let err = dev::up(&mut ctx, &deps).expect_err("a failing task should fail up");
     assert_eq!("dependency failed: a", err.to_string());
     assert_eq!(
         vec![

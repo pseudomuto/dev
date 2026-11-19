@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, env, fmt, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    env,
+    fmt,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::{WrapErr, bail, eyre};
 use serde::{
@@ -23,6 +29,16 @@ use crate::{
 /// Resolves `${VAR}` in env values. Same contract as [`std::env::var`].
 pub type Lookup<'a> = dyn Fn(&str) -> std::result::Result<String, env::VarError> + 'a;
 
+/// A [`Lookup`] that reads the process environment.
+pub fn process_env() -> impl Fn(&str) -> std::result::Result<String, env::VarError> {
+    |var| env::var(var)
+}
+
+/// A [`Lookup`] that reads `map`, where a missing name is unset.
+pub fn vars(map: &BTreeMap<String, String>) -> impl Fn(&str) -> std::result::Result<String, env::VarError> + '_ {
+    |var| map.get(var).cloned().ok_or(env::VarError::NotPresent)
+}
+
 /// A project as described by its `dev.yaml`.
 ///
 /// ```yaml
@@ -43,106 +59,87 @@ pub type Lookup<'a> = dyn Fn(&str) -> std::result::Result<String, env::VarError>
 ///   node: lts
 ///   python: 3.14
 /// ```
+///
+/// Loading only reads the file itself. Its deps are built on request, by
+/// [`Project::deps`], which is the only step that looks at other files.
 pub struct Project {
     /// Lowercase words separated by dashes, e.g. `demo-project`. Optional in
     /// the global file, where it defaults to `global`.
     pub name: String,
     /// Set on every process `dev` runs for this project, sorted by name.
-    /// `${NAME}` in a value is replaced with `NAME` from the environment `dev`
-    /// started in.
+    /// `${NAME}` in a value is replaced with `NAME` from the lookup it was
+    /// loaded with.
     ///
     /// A project with tools also gets [`mise::CONFIG_FILENAME_VAR`], so mise
     /// loads the project's tools in it.
     pub env: Vec<(String, String)>,
     /// Run by `dev <name>`, by name.
     pub commands: BTreeMap<String, ProjectCommand>,
-    /// In the order they appear under `deps`. Keys other than built-in
-    /// dependencies (e.g. `brew`) are tools, all installed by one mise
-    /// dependency where the first one appears. A project's tools go to its
-    /// own mise config, the global file's to dev's global one.
-    ///
-    /// When loaded from a file, the project's packages are installed last,
-    /// for each ecosystem found next to it, unless `packages` says otherwise.
-    pub deps: Vec<Box<dyn Dependency>>,
-    /// The tools under `deps`, as the mise dependency in [`Project::deps`]
+    /// The tools under `deps`, as the mise dependency from [`Project::deps`]
     /// gets them.
     pub tools: Vec<ToolSpec>,
+    /// Where the deps look for files and run.
+    root: PathBuf,
+    scope: Scope,
+    /// What `deps` says, in the order the deps are built.
+    specs: Vec<DepSpec>,
 }
 
 /// Which kind of `dev.yaml` is being read.
-#[derive(Clone, Copy, PartialEq)]
-enum Scope {
-    /// A project's, in `root`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Scope {
+    /// A project's: `name` is required, packages are found next to it, and
+    /// its tools go to its own mise config.
     Project,
-    /// The user's own, which applies everywhere.
+    /// The user's own, which applies everywhere: `name` is optional,
+    /// packages are never detected, and its tools go to dev's global mise
+    /// config.
     Global,
 }
 
+/// One dependency under `deps`, before it's built.
+enum DepSpec {
+    Brew(Vec<String>),
+    Rust(Vec<rust::Entry>),
+    /// Every tool, met by one mise dependency.
+    Tools,
+    /// `packages: [node, ruby]`.
+    Packages(Vec<Eco>),
+    /// Every ecosystem found in the root, if any.
+    DetectedPackages,
+}
+
 impl Project {
-    /// Reads and parses the `dev.yaml` at `path`, expanding env values from
-    /// the process environment.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        Self::load_with(path, &|var| env::var(var))
-    }
-
-    /// Like [`Project::load`], but `${VAR}` in env values comes from `lookup`.
-    pub fn load_with(path: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
-        let path = path.as_ref();
-        let yaml = fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-        // `dev.yaml` has an empty parent; it means the current dir.
-        let root = match path.parent() {
-            Some(dir) if !dir.as_os_str().is_empty() => dir,
-            _ => Path::new("."),
-        };
-        Self::from_yaml_at(&yaml, root, lookup).wrap_err_with(|| format!("invalid project file {}", path.display()))
-    }
-
-    /// Reads and parses the user's global `dev.yaml` at `path`, expanding env
-    /// values from the process environment.
+    /// Reads and parses the `dev.yaml` at `path`, with `${VAR}` in env values
+    /// from `lookup`.
     ///
-    /// Unlike a project's, its `name` is optional, packages are never
-    /// detected next to it, and its tools go to dev's global mise config.
-    pub fn load_global(path: impl AsRef<Path>) -> Result<Self> {
-        Self::load_global_with(path, &|var| env::var(var))
-    }
-
-    /// Like [`Project::load_global`], but `${VAR}` in env values comes from
-    /// `lookup`.
-    pub fn load_global_with(path: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
+    /// The deps' root is the file's dir for [`Scope::Project`], and `HOME`
+    /// (from `lookup`) for [`Scope::Global`], as `${PWD}` is in the shell.
+    pub fn load(path: impl AsRef<Path>, scope: Scope, lookup: &Lookup<'_>) -> Result<Self> {
         let path = path.as_ref();
         let yaml = fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-        Self::parse(&yaml, None, Scope::Global, lookup)
-            .wrap_err_with(|| format!("invalid project file {}", path.display()))
+        let root = match scope {
+            Scope::Global => match lookup("HOME") {
+                Ok(home) if !home.is_empty() => PathBuf::from(home),
+                _ => bail!("HOME is not set, so the deps in {} have nowhere to run", path.display()),
+            },
+            // `dev.yaml` has an empty parent; it means the current dir.
+            Scope::Project => match path.parent() {
+                Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+                _ => PathBuf::from("."),
+            },
+        };
+        Self::from_yaml(&yaml, root, scope, lookup).wrap_err_with(|| format!("invalid project file {}", path.display()))
     }
 
-    /// Parses a `dev.yaml` document, expanding env values from the process
-    /// environment.
+    /// Parses a `dev.yaml` document whose deps look for files and run in
+    /// `root`, with `${VAR}` in env values from `lookup`. Touches nothing on
+    /// disk.
     ///
     /// Fails on unknown top-level fields, reserved dependency keys, names
-    /// that aren't lowercase and dashed, and env values that reference unset
-    /// variables.
-    pub fn from_yaml(yaml: &str) -> Result<Self> {
-        Self::from_yaml_with(yaml, &|var| env::var(var))
-    }
-
-    /// Like [`Project::from_yaml`], but `${VAR}` in env values comes from
-    /// `lookup`.
-    ///
-    /// With no project dir to look in, `packages` is checked but adds
-    /// nothing; see [`Project::from_yaml_at`].
-    pub fn from_yaml_with(yaml: &str, lookup: &Lookup<'_>) -> Result<Self> {
-        Self::parse(yaml, None, Scope::Project, lookup)
-    }
-
-    /// Like [`Project::from_yaml_with`], for a `dev.yaml` in `root`, whose
-    /// packages are installed as `packages` says.
-    pub fn from_yaml_at(yaml: &str, root: impl AsRef<Path>, lookup: &Lookup<'_>) -> Result<Self> {
-        Self::parse(yaml, Some(root.as_ref()), Scope::Project, lookup)
-    }
-
-    /// `root` is the project dir, `None` when there's none to look in. A
-    /// project's tools are still rooted at `.` then, as for `dev.yaml`.
-    fn parse(yaml: &str, root: Option<&Path>, scope: Scope, lookup: &Lookup<'_>) -> Result<Self> {
+    /// that aren't lowercase and dashed, malformed deps, and env values that
+    /// reference unset variables.
+    pub fn from_yaml(yaml: &str, root: impl AsRef<Path>, scope: Scope, lookup: &Lookup<'_>) -> Result<Self> {
         let raw: RawProject = serde_saphyr::from_str(yaml)?;
         let name = match (raw.name, scope) {
             (Some(name), _) => name,
@@ -166,37 +163,25 @@ impl Project {
             })
             .collect::<Result<_>>()?;
 
-        let mut deps = raw.deps.deps;
+        let mut specs = raw.deps.specs;
         let mut tools = Vec::new();
         if let Some((at, raw_tools)) = raw.deps.tools {
             tools = raw_tools
                 .into_iter()
                 .map(|tool| tool.resolve(yaml))
                 .collect::<Result<Vec<_>>>()?;
-            let mise = match scope {
-                Scope::Global => Mise::global(tools.clone()),
-                Scope::Project => {
-                    let at = mise::PROJECT_CONFIG.to_string();
-                    let i = env.partition_point(|(name, _)| name.as_str() < mise::CONFIG_FILENAME_VAR);
-                    env.insert(i, (mise::CONFIG_FILENAME_VAR.to_string(), at));
-                    Mise::project(root.unwrap_or(Path::new(".")), tools.clone())
-                }
-            };
-            deps.insert(at, Box::new(mise));
+            if scope == Scope::Project {
+                let at = mise::PROJECT_CONFIG.to_string();
+                let i = env.partition_point(|(name, _)| name.as_str() < mise::CONFIG_FILENAME_VAR);
+                env.insert(i, (mise::CONFIG_FILENAME_VAR.to_string(), at));
+            }
+            specs.insert(at, DepSpec::Tools);
         }
-        if let (Some(root), Scope::Project) = (root, scope) {
+        if scope == Scope::Project {
             match raw.deps.packages {
-                PackagesSetting::Auto => {
-                    let packages = Packages::detect(root, Mode::from_env());
-                    // Nothing found, so nothing to show.
-                    if !packages.tasks().is_empty() {
-                        deps.push(Box::new(packages));
-                    }
-                }
+                PackagesSetting::Auto => specs.push(DepSpec::DetectedPackages),
                 PackagesSetting::Off => {}
-                PackagesSetting::Only { ecos, at } => {
-                    deps.insert(at, Box::new(Packages::only(root, &ecos, Mode::from_env())?))
-                }
+                PackagesSetting::Only { ecos, at } => specs.insert(at, DepSpec::Packages(ecos)),
             }
         }
 
@@ -204,9 +189,43 @@ impl Project {
             name,
             env,
             commands: raw.commands,
-            deps,
             tools,
+            root: root.as_ref().to_path_buf(),
+            scope,
+            specs,
         })
+    }
+
+    /// Builds the dependencies, in the order they appear under `deps`. Keys
+    /// other than built-in dependencies (e.g. `brew`) are tools, all
+    /// installed by one mise dependency where the first one appears. A
+    /// project's tools go to its own mise config, the global file's to dev's
+    /// global one.
+    ///
+    /// A project's packages are installed last, for each ecosystem found in
+    /// its root, unless `packages` says otherwise. Fails when `packages`
+    /// lists an ecosystem with none of its files there.
+    pub fn deps(&self, mode: Mode) -> Result<Vec<Box<dyn Dependency>>> {
+        let mut deps: Vec<Box<dyn Dependency>> = Vec::new();
+        for spec in &self.specs {
+            match spec {
+                DepSpec::Brew(packages) => deps.push(Box::new(Brew::new(packages.clone()))),
+                DepSpec::Rust(entries) => deps.push(Box::new(Rust::new(&self.root, entries.clone()))),
+                DepSpec::Tools => match self.scope {
+                    Scope::Global => deps.push(Box::new(Mise::global(self.tools.clone()))),
+                    Scope::Project => deps.push(Box::new(Mise::project(&self.root, self.tools.clone()))),
+                },
+                DepSpec::Packages(ecos) => deps.push(Box::new(Packages::only(&self.root, ecos, mode)?)),
+                DepSpec::DetectedPackages => {
+                    let packages = Packages::detect(&self.root, mode);
+                    // Nothing found, so nothing to show.
+                    if !packages.tasks().is_empty() {
+                        deps.push(Box::new(packages));
+                    }
+                }
+            }
+        }
+        Ok(deps)
     }
 }
 
@@ -223,13 +242,12 @@ struct RawProject {
     deps: Deps,
 }
 
-/// The `deps` map, turned into dependencies by key as it's read. Packages
-/// and tools depend on where the file is, so only their settings are kept
-/// here.
+/// The `deps` map, as read. Tools and packages go into `specs` later, at the
+/// index each one was found at.
 #[derive(Default)]
 struct Deps {
-    deps: Vec<Box<dyn Dependency>>,
-    /// The tools, and the index in `deps` their one dependency goes at.
+    specs: Vec<DepSpec>,
+    /// The tools, and the index in `specs` their one dependency goes at.
     tools: Option<(usize, Vec<RawTool>)>,
     packages: PackagesSetting,
 }
@@ -301,7 +319,7 @@ impl<'de> Visitor<'de> for DepsVisitor {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Deps, A::Error> {
-        let mut deps: Vec<Box<dyn Dependency>> = Vec::new();
+        let mut specs: Vec<DepSpec> = Vec::new();
         // Every key that isn't a built-in dependency is a mise tool. They're
         // all met by one dependency, placed where the first tool appears.
         let mut tools: Vec<RawTool> = Vec::new();
@@ -315,16 +333,16 @@ impl<'de> Visitor<'de> for DepsVisitor {
             match key.as_str() {
                 "brew" => {
                     let packages: Vec<String> = map.next_value()?;
-                    deps.push(Box::new(Brew::new(packages)));
+                    specs.push(DepSpec::Brew(packages));
                 }
                 "rust" => {
                     let entries: Vec<rust::Entry> = map.next_value()?;
-                    deps.push(Box::new(Rust::new(entries)));
+                    specs.push(DepSpec::Rust(entries));
                 }
                 "packages" => {
                     packages = match map.next_value()? {
                         PackagesValue::Off => PackagesSetting::Off,
-                        PackagesValue::Only(ecos) => PackagesSetting::Only { ecos, at: deps.len() },
+                        PackagesValue::Only(ecos) => PackagesSetting::Only { ecos, at: specs.len() },
                     };
                     packages_after_tools = tools_at.is_some();
                 }
@@ -336,7 +354,7 @@ impl<'de> Visitor<'de> for DepsVisitor {
                 }
                 _ => {
                     let value: Spanned<ToolValue> = map.next_value()?;
-                    tools_at.get_or_insert(deps.len());
+                    tools_at.get_or_insert(specs.len());
                     tools.push(RawTool::new(key, value).map_err(de::Error::custom)?);
                 }
             }
@@ -352,7 +370,7 @@ impl<'de> Visitor<'de> for DepsVisitor {
         }
 
         let tools = tools_at.map(|at| (at, tools));
-        Ok(Deps { deps, tools, packages })
+        Ok(Deps { specs, tools, packages })
     }
 }
 
