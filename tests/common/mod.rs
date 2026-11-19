@@ -270,3 +270,27 @@ pub fn copy_executable(from: &Path, to: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// The `__DEV_ENV` JSON of a shell that has loaded `file` as it is on disk
+/// now, as one layer rooted at its dir.
+#[allow(dead_code)]
+pub fn shell_state(file: &Path, global: bool) -> Result<String> {
+    use dev::shell::env::{Layer, State};
+
+    let modified = fs::metadata(file)?
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos()
+        .try_into()?;
+    let root = file.parent().expect("file is in a dir").to_path_buf();
+    let state = State {
+        layers: vec![Layer {
+            path: file.to_path_buf(),
+            root,
+            modified,
+            global,
+        }],
+        baseline: Default::default(),
+    };
+    Ok(serde_json::to_string(&state)?)
+}

@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     io::{self, IsTerminal},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
@@ -18,13 +18,11 @@ use dev::{
     new::{self, Templates},
     project::{Project, Scope, process_env},
     report::{Plain, Reporter, clack::Clack},
+    run::{Dirs, PROJECT_FILE, Plan, Target},
     run_log::{self, RunLog},
     shell,
     update::{self, Outcome, Updater},
 };
-
-/// The project file `dev` reads, relative to the current directory.
-const PROJECT_FILE: &str = "dev.yaml";
 
 #[derive(Parser)]
 #[command(version, about = "Set up a project's development dependencies")]
@@ -83,136 +81,144 @@ async fn main() -> Result<()> {
     let cli = parse_cli();
     let vars = process_vars()?;
 
-    // The template's notes, printed once `dev new` has run `dev up`.
-    let mut notes = None;
-
-    // These run anywhere, with or without ./dev.yaml.
     match cli.command {
-        Command::ShellInit => {
-            print!("{}", shell::init_script(&shell::ShellDir::user_default()?));
-            return Ok(());
-        }
-        Command::ActionPaths => {
-            let exe = env::current_exe().wrap_err("failed to find the running dev")?;
-            let dev_dir = exe
-                .parent()
-                .ok_or_else(|| eyre!("{} isn't in a directory", exe.display()))?;
-            let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
-            let host = layout::Host::current();
-            let layout = layout::Layout::current()?;
-            // The Action step's PATH: action-paths has no project env.
-            let search = env::var_os("PATH").unwrap_or_default();
-            let mise = dev::deps::bin::locate(&search, "mise", &layout.mise_bin);
-            let paths = action::paths(&layout, host, mise.path(), dev_dir, &cwd);
-            println!("{}", serde_json::to_string(&paths)?);
-            return Ok(());
-        }
-        Command::HookEnv => {
-            if let Some(script) = shell::env::hook(&vars)? {
-                print!("{script}");
-            }
-            // After the script, and never instead of it: a failure here
-            // mustn't leave the shell without its env.
-            if let Err(e) = auto_update(&vars) {
-                eprintln!("dev: failed to check for updates: {e:#}");
-            }
-            return Ok(());
-        }
-        Command::SelfUpdate { background } => {
-            let updater = Updater::for_current_exe()?;
-            let outcome = updater.update(&Context::default())?;
-            let notice = update::describe(&outcome);
-            if background && matches!(outcome, Outcome::Updated { .. }) {
-                updater.save_notice(&notice)?;
-            } else if !background {
-                // Anything saved is older news than this.
-                updater.take_notice()?;
-            }
-            println!("{notice}");
-            return Ok(());
-        }
-        // Creates the project, then carries on below as `dev up` in it.
-        Command::New { ref name, ref template } => {
-            let dest = Path::new(name);
-            notes = Templates::user_default()?.find(template)?.create(name, dest)?;
-            new::git_init(&Context::default(), dest)?;
-            env::set_current_dir(dest).wrap_err_with(|| format!("failed to change to {name}"))?;
-        }
-        _ => {}
+        Command::ShellInit => shell_init(),
+        Command::ActionPaths => action_paths(),
+        Command::HookEnv => hook_env(&vars),
+        Command::SelfUpdate { background } => self_update(background),
+        Command::Up { global } => up(global, &vars),
+        Command::New { name, template } => new(&name, &template, &vars),
+        Command::Down => down(&vars),
+        Command::Project(args) => project(&args, &vars),
     }
+}
 
+/// `dev shell-init`. Runs anywhere, with or without ./dev.yaml.
+fn shell_init() -> Result<()> {
+    print!("{}", shell::init_script(&shell::ShellDir::user_default()?));
+    Ok(())
+}
+
+/// `dev action-paths`.
+fn action_paths() -> Result<()> {
+    let exe = env::current_exe().wrap_err("failed to find the running dev")?;
+    let dev_dir = exe
+        .parent()
+        .ok_or_else(|| eyre!("{} isn't in a directory", exe.display()))?;
+    let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
+    let host = layout::Host::current();
+    let layout = layout::Layout::current()?;
+    // The Action step's PATH: action-paths has no project env.
+    let search = env::var_os("PATH").unwrap_or_default();
+    let mise = dev::deps::bin::locate(&search, "mise", &layout.mise_bin);
+    let paths = action::paths(&layout, host, mise.path(), dev_dir, &cwd);
+    println!("{}", serde_json::to_string(&paths)?);
+    Ok(())
+}
+
+/// `dev hook-env`, run before every prompt.
+fn hook_env(vars: &BTreeMap<String, String>) -> Result<()> {
+    if let Some(script) = shell::env::hook(vars)? {
+        print!("{script}");
+    }
+    // After the script, and never instead of it: a failure here mustn't
+    // leave the shell without its env.
+    if let Err(e) = auto_update(vars) {
+        eprintln!("dev: failed to check for updates: {e:#}");
+    }
+    Ok(())
+}
+
+/// `dev self-update`.
+fn self_update(background: bool) -> Result<()> {
+    let updater = Updater::for_current_exe()?;
+    let outcome = updater.update(&Context::default())?;
+    let notice = update::describe(&outcome);
+    if background && matches!(outcome, Outcome::Updated { .. }) {
+        updater.save_notice(&notice)?;
+    } else if !background {
+        // Anything saved is older news than this.
+        updater.take_notice()?;
+    }
+    println!("{notice}");
+    Ok(())
+}
+
+/// `dev up`, for ./dev.yaml or, with `global`, the user's global dev.yaml,
+/// which logs to the state dir instead of `.dev/log`.
+fn up(global: bool, vars: &BTreeMap<String, String>) -> Result<()> {
+    print_update_notice();
+    // Only the global file needs the XDG dirs, and so `$HOME`.
+    let plan = Plan::new(if global {
+        Target::Global(Dirs::current()?)
+    } else {
+        Target::Project
+    });
+
+    let (project, mut ctx) = load(&plan, vars)?;
+    with_run_log(&mut ctx, plan.logs.as_deref(), "up", &project.name, |ctx| {
+        dev::up(ctx, &project.deps(Mode::from_env())?)
+    })
+}
+
+/// `dev new`: creates ./<name> from `template`, then runs `dev up` in it and
+/// prints the template's notes.
+fn new(name: &str, template: &str, vars: &BTreeMap<String, String>) -> Result<()> {
+    let dest = Path::new(name);
+    let notes = Templates::user_default()?.find(template)?.create(name, dest)?;
+    new::git_init(&Context::default(), dest)?;
+    // Deps without a root of their own run in the process's cwd.
+    env::set_current_dir(dest).wrap_err_with(|| format!("failed to change to {name}"))?;
     print_update_notice();
 
-    // The dev.yaml this run reads, and where its logs go when it isn't the
-    // project's `.dev/log`.
-    let (file, logs) = match cli.command {
-        Command::Up { global: true } => (
-            shell::config_home()?.join(PROJECT_FILE),
-            Some(shell::state_home()?.join("dev/log")),
-        ),
-        _ => (PathBuf::from(PROJECT_FILE), None),
-    };
+    let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
+    let plan = Plan::new(Target::New(cwd));
+    let (project, mut ctx) = load(&plan, vars)?;
 
-    let project = match cli.command {
-        Command::Up { global: true } => Project::load(&file, Scope::Global, &process_env())?,
-        // The shell's `$PWD` is still the parent dir, but `${PWD}` in
-        // dev.yaml must be the new project's.
-        Command::New { .. } => {
-            let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
-            let cwd = cwd.to_string_lossy().into_owned();
-            Project::load(PROJECT_FILE, Scope::Project, &|var| match var {
-                "PWD" => Ok(cwd.clone()),
-                _ => env::var(var),
-            })?
-        }
-        _ => Project::load(PROJECT_FILE, Scope::Project, &process_env())?,
-    };
+    let up = with_run_log(&mut ctx, plan.logs.as_deref(), "up", &project.name, |ctx| {
+        dev::up(ctx, &project.deps(Mode::from_env())?)
+    });
+    if up.is_ok() {
+        println!("\nCreated {name}. Next: cd {name}");
+    }
+    // The project exists either way, so its notes still apply.
+    if let Some(notes) = notes {
+        println!("\n{}", notes.trim_end());
+    }
+    up.with_note(|| format!("{name} was created; run `dev up` in it to try again"))
+}
+
+/// `dev down`.
+fn down(vars: &BTreeMap<String, String>) -> Result<()> {
+    print_update_notice();
+    let plan = Plan::new(Target::Project);
+    let (project, mut ctx) = load(&plan, vars)?;
+    with_run_log(&mut ctx, plan.logs.as_deref(), "down", &project.name, |ctx| {
+        dev::down(ctx, &project.deps(Mode::from_env())?)
+    })
+}
+
+/// `dev <command> [args]`, a command from ./dev.yaml. Exits with its code.
+fn project(args: &[String], vars: &BTreeMap<String, String>) -> Result<()> {
+    print_update_notice();
+    let (project, ctx) = load(&Plan::new(Target::Project), vars)?;
+    let (name, args) = args.split_first().expect("clap passes the command name first");
+    let code = dev::run_command(&ctx, &project, name, args)?;
+    std::process::exit(code);
+}
+
+/// Reads the dev.yaml `plan` is for, and the context to run it with, given
+/// the shell's `vars`.
+fn load(plan: &Plan, vars: &BTreeMap<String, String>) -> Result<(Project, Context)> {
+    let project = plan.load(&process_env())?;
     reject_built_in_names(&project)?;
 
-    // A shell that already loaded this dev.yaml has its env, so expanding it
-    // again would apply it twice, e.g. `${PWD}/bin` twice on PATH.
     let cwd = env::current_dir().wrap_err("failed to read the current directory")?;
-    let env = if shell::env::applied(&vars, &cwd.join(&file))? {
-        Vec::new()
-    } else {
-        project.env.clone()
-    };
-    let mut ctx = Context {
-        env,
+    let ctx = Context {
+        env: plan.env(&project, vars, &cwd)?,
         ..Context::default()
     };
-
-    match cli.command {
-        Command::ShellInit | Command::HookEnv | Command::ActionPaths | Command::SelfUpdate { .. } => {
-            unreachable!("handled before loading dev.yaml")
-        }
-        Command::Up { .. } => with_run_log(&mut ctx, logs.as_deref(), "up", &project.name, |ctx| {
-            dev::up(ctx, &project.deps(Mode::from_env())?)
-        })?,
-        Command::New { name, .. } => {
-            let up = with_run_log(&mut ctx, logs.as_deref(), "up", &project.name, |ctx| {
-                dev::up(ctx, &project.deps(Mode::from_env())?)
-            });
-            if up.is_ok() {
-                println!("\nCreated {name}. Next: cd {name}");
-            }
-            // The project exists either way, so its notes still apply.
-            if let Some(notes) = notes {
-                println!("\n{}", notes.trim_end());
-            }
-            up.with_note(|| format!("{name} was created; run `dev up` in it to try again"))?;
-        }
-        Command::Down => with_run_log(&mut ctx, logs.as_deref(), "down", &project.name, |ctx| {
-            dev::down(ctx, &project.deps(Mode::from_env())?)
-        })?,
-        Command::Project(args) => {
-            let (name, args) = args.split_first().expect("clap passes the command name first");
-            let code = dev::run_command(&ctx, &project, name, args)?;
-            std::process::exit(code);
-        }
-    }
-
-    Ok(())
+    Ok((project, ctx))
 }
 
 /// Starts a background `dev self-update` if `DEV_AUTO_UPDATE` (in `vars`)

@@ -560,3 +560,20 @@ fn up_global_reads_only_the_global_dev_yaml_and_logs_to_the_state_dir() -> Resul
     assert!(!dir.path().join(".dev").exists(), "the project dir is left alone");
     Ok(())
 }
+
+#[test]
+fn project_commands_skip_the_env_the_shell_already_loaded() -> Result<()> {
+    let dir = project_dir("name: demo\nenv:\n  X: from-yaml\ncommands:\n  show: echo \"$X\"\n")?;
+    let state = common::shell_state(&dir.path().join("dev.yaml"), false)?;
+
+    let output = dev_with(&dir, &["show"], &[("X", "from-shell"), ("__DEV_ENV", &state)])?;
+
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!("from-shell\n", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
