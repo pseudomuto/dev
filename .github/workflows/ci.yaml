@@ -73,3 +73,47 @@ jobs:
       # one it misses.
       - name: Build the test image
         run: docker build -t dev-test .
+
+  # The action with a brew dep, on Linux only: on macOS zerobrew lives in
+  # root-owned /opt, and the action has no brew cache there. A rerun of this
+  # job restores the brew cache saved by the first run.
+  brew:
+    name: action with brew deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build dev
+        run: cargo build --locked
+
+      - name: Put this build of dev on PATH
+        run: echo "$PWD/target/debug" >> "$GITHUB_PATH"
+
+      # The action runs `dev up` at the root of the checkout.
+      - name: Use the brew fixture as dev.yaml
+        run: cp testdata/action-brew.yaml dev.yaml
+
+      - name: Install dependencies
+        uses: ./
+        with:
+          version: installed
+
+      # jq is from zerobrew, ahead of the runner's own, and every brew path
+      # the action caches exists.
+      - name: Check the brew setup
+        run: |
+          set -eu
+          paths=$(dev action-paths)
+          root=$(printf '%s' "$paths" | jq -r .brew_root)
+          case "$(command -v jq)" in
+            "$root"/*) ;;
+            *) echo "::error::jq isn't from zerobrew: $(command -v jq)"; exit 1 ;;
+          esac
+          printf '%s' "$paths" | jq -r '.brew_cache[]' | while IFS= read -r p; do
+            if [ ! -e "$p" ]; then
+              echo "::error::the action caches $p, which doesn't exist"
+              exit 1
+            fi
+          done

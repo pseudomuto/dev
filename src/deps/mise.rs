@@ -13,13 +13,15 @@ use serde::Deserialize;
 
 use crate::{
     deps::{Dependency, Example, Task},
+    layout,
     process,
-    shell::{ShellDir, config_home, data_home, home},
+    shell::{ShellDir, config_home},
 };
 
 const INSTALL_URL: &str = "https://mise.run";
-/// mise's file in the [`ShellDir`]. Must match `share/shell`.
-const SHELL_FILE: &str = "mise";
+/// mise's file in the [`ShellDir`], listed in
+/// [`SETUP_FILES`](crate::shell::SETUP_FILES).
+pub const SHELL_FILE: &str = "mise";
 
 /// Where a project's tools go, relative to its root. `.dev` is git-ignored
 /// (see [`RunLog`](crate::run_log::RunLog)).
@@ -121,10 +123,7 @@ impl Mise {
 
 /// `$MISE_DATA_DIR`, or `mise` in the XDG data dir, as mise itself has it.
 fn default_data_dir() -> crate::Result<PathBuf> {
-    match env::var_os("MISE_DATA_DIR").filter(|d| !d.is_empty()) {
-        Some(dir) => Ok(PathBuf::from(dir)),
-        None => Ok(data_home()?.join("mise")),
-    }
+    layout::mise_data(&layout::process)
 }
 
 impl Dependency for Mise {
@@ -725,10 +724,7 @@ fn default_mise() -> crate::Result<PathBuf> {
 /// Where the installer puts mise: `$MISE_INSTALL_PATH`, or
 /// `~/.local/bin/mise`.
 fn default_install_path() -> crate::Result<PathBuf> {
-    match env::var_os("MISE_INSTALL_PATH").filter(|p| !p.is_empty()) {
-        Some(path) => Ok(PathBuf::from(path)),
-        None => Ok(home()?.join(".local/bin/mise")),
-    }
+    layout::mise_bin(&layout::process)
 }
 
 /// mise's config dir: `$MISE_CONFIG_DIR`, or `$XDG_CONFIG_HOME/mise`.

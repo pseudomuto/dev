@@ -7,7 +7,10 @@
 //! [`dev`] also keeps `dev` away from the real home and the real mise and zb,
 //! as a backstop for when that rule gets broken.
 
-use std::process::{Command, Output};
+use std::{
+    path::Path,
+    process::{Command, Output},
+};
 
 use dev::Result;
 use tempfile::TempDir;
@@ -387,8 +390,37 @@ fn shell_init_prints_the_shell_setup_anywhere() -> Result<()> {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let want = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/share/shell"))?;
+    let share = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/share/shell"))?;
+    let shell = dir.path().join("home/.local/share/dev/shell");
+    let want = format!(
+        "__dev_shell_dir='{}'\n__dev_stamp_file='{}/.stamp'\n__dev_setups='{}'\n{share}",
+        shell.display(),
+        shell.display(),
+        dev::shell::SETUP_FILES.join("\n"),
+    );
     assert_eq!(want, String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+#[test]
+fn action_paths_prints_the_layout_for_this_env() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let data = dir.path().join("data");
+    let data_str = data.to_str().expect("temp paths are UTF-8");
+    let output = dev_with(&dir, &["action-paths"], &[("XDG_DATA_HOME", data_str)])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(Some(0), output.status.code(), "stderr: {stderr}");
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let shims = data.join("mise/shims");
+    assert_eq!(Some(shims.to_str().expect("UTF-8")), json["path"][0]["dir"].as_str());
+    let exe_dir = Path::new(env!("CARGO_BIN_EXE_dev")).parent().expect("dev is in a dir");
+    assert_eq!(
+        Some(exe_dir.to_str().expect("UTF-8")),
+        json["path"][3]["dir"].as_str(),
+        "dev's own dir comes last"
+    );
+    assert!(json["cache"].is_array() && json["brew_cache"].is_array(), "{json}");
     Ok(())
 }
 

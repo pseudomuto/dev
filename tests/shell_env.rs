@@ -5,7 +5,10 @@ use std::{
     process::Command,
 };
 
-use dev::{Result, shell::env::hook};
+use dev::{
+    Result,
+    shell::{SETUP_FILES, ShellDir, env::hook},
+};
 use tempfile::TempDir;
 
 /// A fake `$HOME` and a shell env that lives in it.
@@ -267,7 +270,59 @@ fn env_loads_even_when_the_deps_cant_be_met_here() -> Result<()> {
     Ok(())
 }
 
-/// Sources `share/shell` in a real `sh` with the built `dev` on `PATH`.
+/// Evals `dev shell-init` in `shell` with setups for every
+/// [`SETUP_FILES`] name, plus one dev doesn't know, then changes the stamp
+/// and runs the hook. Returns what the setups logged, in order.
+#[allow(clippy::disallowed_methods)]
+fn load_setups(shell: &str) -> Result<String> {
+    let home = tempfile::tempdir()?;
+    let dir = ShellDir::new(home.path().join("data/dev/shell"));
+    for name in SETUP_FILES.iter().chain(&["other"]) {
+        dir.write(name, &format!("echo {name} >> \"$LOG\"\n"))?;
+    }
+    let bin = Path::new(env!("CARGO_BIN_EXE_dev")).parent().expect("dev is in a dir");
+    let log = home.path().join("log");
+
+    let script = r#"
+        eval "$(dev shell-init)"
+        echo changed > "$XDG_DATA_HOME/dev/shell/.stamp"
+        __dev_hook
+    "#;
+    let output = Command::new(shell)
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PWD", home.path())
+        .env("XDG_DATA_HOME", home.path().join("data"))
+        .env("DEV_AUTO_UPDATE", "0")
+        .env("LOG", &log)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .current_dir(home.path())
+        .args(["-c", script])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{shell} stderr: {stderr}");
+    Ok(fs::read_to_string(&log)?)
+}
+
+#[test]
+fn shell_init_loads_setups_in_order_and_reloads_them_on_a_new_stamp() -> Result<()> {
+    let once = SETUP_FILES.map(|name| format!("{name}\n")).concat();
+    let want = once.repeat(2);
+    let mut shells = vec!["/bin/sh", "/bin/bash"];
+    // Always there on macOS (and its CI runners); bash and sh cover the rest.
+    if let Some(zsh) = ["/bin/zsh", "/usr/bin/zsh"]
+        .into_iter()
+        .find(|z| Path::new(z).is_file())
+    {
+        shells.push(zsh);
+    }
+    for shell in shells {
+        assert_eq!(want, load_setups(shell)?, "{shell}");
+    }
+    Ok(())
+}
+
+/// Evals `dev shell-init` in a real `sh` with the built `dev` on `PATH`.
 #[test]
 #[allow(clippy::disallowed_methods)]
 fn share_shell_loads_and_unloads_project_env() -> Result<()> {
@@ -277,10 +332,9 @@ fn share_shell_loads_and_unloads_project_env() -> Result<()> {
         "name: proj\nenv:\n  GREETING: hi\n  PATH: \"${PWD}/bin:${PATH}\"\ncommands:\n  path: 'echo \"$PATH\"'\n",
     )?;
     let bin = Path::new(env!("CARGO_BIN_EXE_dev")).parent().expect("dev is in a dir");
-    let share = Path::new(env!("CARGO_MANIFEST_DIR")).join("share/shell");
 
     let script = r#"
-        . "$1"
+        eval "$(dev shell-init)"
         cd proj && __dev_hook
         echo "in: $GREETING"
         dev path
@@ -296,7 +350,6 @@ fn share_shell_loads_and_unloads_project_env() -> Result<()> {
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
         .current_dir(sh.home.path())
         .args(["-c", script, "sh"])
-        .arg(&share)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
@@ -354,7 +407,7 @@ fn a_project_with_tools_points_mise_at_its_config_only_inside_it() -> Result<()>
     Ok(())
 }
 
-/// Runs `script` in bash with `share/shell` loaded (as `$1`), in `$HOME`,
+/// Runs `script` in bash, in `$HOME`,
 /// with the real `dev` and a fake `mise` first on `PATH`. The fake logs each
 /// call, with the `MISE_DEFAULT_CONFIG_FILENAME` it saw, to `$HOME/calls`.
 /// Returns stdout and the logged calls.
@@ -372,7 +425,6 @@ fn bash_with_fake_mise(sh: &Shell, script: &str) -> Result<(String, Vec<String>)
     fs::set_permissions(&mise, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
 
     let bin = Path::new(env!("CARGO_BIN_EXE_dev")).parent().expect("dev is in a dir");
-    let share = Path::new(env!("CARGO_MANIFEST_DIR")).join("share/shell");
     let output = Command::new("/bin/bash")
         .env_clear()
         .env("HOME", sh.home.path())
@@ -382,7 +434,6 @@ fn bash_with_fake_mise(sh: &Shell, script: &str) -> Result<(String, Vec<String>)
         .env("PATH", format!("{}:{}:/usr/bin:/bin", fake.display(), bin.display()))
         .current_dir(sh.home.path())
         .args(["--norc", "-c", script, "bash"])
-        .arg(&share)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
@@ -403,7 +454,7 @@ fn share_shell_reruns_mises_hook_when_the_env_changes() -> Result<()> {
     sh.project("proj", "name: proj\ndeps:\n  node: lts\n")?;
 
     let script = r#"
-        . "$1"
+        eval "$(dev shell-init)"
         export MISE_SHELL=bash
         cd proj && __dev_hook
         __dev_hook
@@ -426,7 +477,7 @@ fn share_shell_leaves_mise_alone_when_it_isnt_activated() -> Result<()> {
     let sh = Shell::new()?;
     sh.project("proj", "name: proj\ndeps:\n  node: lts\n")?;
 
-    let (_, calls) = bash_with_fake_mise(&sh, ". \"$1\"\ncd proj && __dev_hook\n")?;
+    let (_, calls) = bash_with_fake_mise(&sh, "eval \"$(dev shell-init)\"\ncd proj && __dev_hook\n")?;
     assert_eq!(Vec::<String>::new(), calls);
     Ok(())
 }

@@ -1,7 +1,9 @@
+pub mod action;
 pub mod commands;
 mod context;
 pub mod deps;
 mod down;
+pub mod layout;
 pub mod new;
 pub mod process;
 pub mod project;

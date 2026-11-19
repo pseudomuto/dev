@@ -382,11 +382,12 @@ It installs dev, runs `dev up` from the root of the checkout, and puts the tools
 steps like `cargo test` or `jq` work too. `dev up` also installs your project's packages, from the lockfile as is (see
 [deps](#deps)), so you can drop your own `npm ci` or `bundle install` step. Pin it to a commit SHA, as above, or to a
 release tag: either way it installs the matching dev release. Dependabot and Renovate can keep the pin up to date. On
-Linux and macOS only.
+Linux and macOS only. It needs dev 0.4.0 or later, so a `version` set to an older release fails before installing
+anything.
 
 | Input             | Default | What it does                                                                      |
 | ----------------- | ------- | --------------------------------------------------------------------------------- |
-| `version`         |         | dev version to install, e.g. `0.2.0`. Needed when the action is used at a branch. |
+| `version`         |         | dev version to install, e.g. `0.4.0`. Needed when the action is used at a branch. |
 | `cache`           | `true`  | Set to `false` to skip the cache.                                                 |
 | `cache-key-files` |         | Extra files whose changes should refresh the cache, one glob per line.            |
 | `export-env`      | `false` | Also export `dev.yaml`'s `env` to later steps (see below).                        |
@@ -423,6 +424,10 @@ missing. A few things to know:
   `dev.yaml` changes, since the cache can't tell it's new.
 - **Brew packages are cached on their own and only reused on an exact key match.** dev never uninstalls brew packages,
   so this keeps one you removed from `dev.yaml` from lingering in CI. The cost: any change to the key reinstalls them.
+- **Brew packages aren't cached on macOS.** zerobrew keeps them in `/opt/zerobrew` there, and restoring into
+  root-owned `/opt` would need sudo, which the action doesn't use. `dev up` still installs them.
+- **The cached paths come from dev**, so they follow the runner's `XDG_DATA_HOME`, `MISE_DATA_DIR`,
+  `MISE_INSTALL_PATH`, `RUSTUP_HOME`, `ZEROBREW_BIN`, and `ZEROBREW_ROOT`, e.g. on a self-hosted runner.
 - **Old Rust toolchains stay in the cache** after you move to a new one. If it gets big, change `cache-key-files` (or
   anything else in the key) to start a fresh one. Unused mise tool versions are dropped automatically.
 

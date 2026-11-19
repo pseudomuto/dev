@@ -25,12 +25,7 @@ use std::{
 
 use color_eyre::eyre::{WrapErr, bail, eyre};
 
-use crate::{
-    Context,
-    Result,
-    process,
-    shell::{home, state_home},
-};
+use crate::{Context, Result, process, shell::state_home};
 
 /// `install.sh`, run by `dev self-update` to install a release.
 pub const INSTALL_SCRIPT: &str = include_str!("../install.sh");
@@ -197,10 +192,7 @@ impl Updater {
     }
 
     fn in_cargo_bin(&self) -> bool {
-        let cargo_home = std::env::var_os("CARGO_HOME")
-            .filter(|h| !h.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| home().ok().map(|h| h.join(".cargo")));
+        let cargo_home = crate::layout::cargo_home(&crate::layout::process).ok();
         cargo_home.is_some_and(|h| self.exe.starts_with(h.join("bin")))
     }
 

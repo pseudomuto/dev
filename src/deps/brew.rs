@@ -16,8 +16,9 @@ use crate::{
 };
 
 const INSTALL_URL: &str = "https://zerobrew.rs/install";
-/// zerobrew's file in the [`ShellDir`]. Must match `share/shell`.
-const SHELL_FILE: &str = "zerobrew";
+/// zerobrew's file in the [`ShellDir`], listed in
+/// [`SETUP_FILES`](crate::shell::SETUP_FILES).
+pub const SHELL_FILE: &str = "zerobrew";
 const LATEST_RELEASE_URL: &str = "https://github.com/zerobrewhq/zerobrew/releases/latest";
 
 /// Installs zerobrew and a set of brew packages.
@@ -343,15 +344,7 @@ fn listed_names(output: &str) -> impl Iterator<Item = &str> {
 
 /// Where the installer puts `zb`: `$ZEROBREW_BIN/zb`, or `~/.local/bin/zb`.
 fn default_zb_path() -> crate::Result<PathBuf> {
-    // The installer treats an empty ZEROBREW_BIN as unset, so do the same.
-    if let Some(bin) = env::var_os("ZEROBREW_BIN").filter(|b| !b.is_empty()) {
-        return Ok(PathBuf::from(bin).join("zb"));
-    }
-
-    let home = env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .ok_or_else(|| eyre!("HOME is not set, so zb can't be found in ~/.local/bin"))?;
-    Ok(PathBuf::from(home).join(".local/bin/zb"))
+    Ok(crate::layout::zb_bin(&crate::layout::process)?.join("zb"))
 }
 
 fn installed_version(ctx: &crate::Context, zb: &Path) -> crate::Result<String> {

@@ -9,6 +9,10 @@
 # $XDG_DATA_HOME/dev/shell (~/.local/share/dev/shell by default). Each file
 # there is the tool's own setup, copied as is, so it can't drift from upstream.
 #
+# `dev shell-init` prints three vars before this file, so the names live only
+# in dev: __dev_shell_dir (that dir), __dev_stamp_file (its stamp), and
+# __dev_setups (the setup files, one per line, in load order).
+#
 # A program can't change the environment of the shell that ran it, so this
 # file keeps the shell in sync instead:
 #
@@ -20,30 +24,21 @@
 # - `dev` becomes a shell function that runs the real `dev` and then the same
 #   check, so `dev up && jq ...` works on one line.
 
-# Loads the generated setup that exists so far.
+# Loads the generated setup that exists so far, in the order dev lists it
+# (later ones come first on PATH; see SETUP_FILES in src/shell.rs).
 __dev_load() {
-  __dev_shell="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell"
+  # One name per line. Read line by line, since zsh doesn't split unquoted
+  # vars; a heredoc keeps the loop in this shell, so the setup sticks.
+  while IFS= read -r __dev_setup; do
+    if [ -f "${__dev_shell_dir:?}/$__dev_setup" ]; then
+      # shellcheck source=/dev/null
+      . "$__dev_shell_dir/$__dev_setup"
+    fi
+  done <<EOF
+${__dev_setups:?}
+EOF
 
-  # zerobrew: the block `zb init` would have added to your rc file.
-  if [ -f "$__dev_shell/zerobrew" ]; then
-    # shellcheck source=/dev/null
-    . "$__dev_shell/zerobrew"
-  fi
-
-  # rustup: its own $CARGO_HOME/env, which puts cargo's bin dir on PATH.
-  if [ -f "$__dev_shell/rustup" ]; then
-    # shellcheck source=/dev/null
-    . "$__dev_shell/rustup"
-  fi
-
-  # mise: runs `mise activate` for this shell. It goes after zerobrew and
-  # rustup, so the tools mise manages come first on PATH.
-  if [ -f "$__dev_shell/mise" ]; then
-    # shellcheck source=/dev/null
-    . "$__dev_shell/mise"
-  fi
-
-  unset __dev_shell
+  unset __dev_setup
 }
 
 # Reloads the setup if `dev` changed it since this shell last loaded it, then
@@ -53,8 +48,7 @@ __dev_hook() {
   set -- "$?"
 
   __dev_stamp=
-  __dev_stamp_file="${XDG_DATA_HOME:-$HOME/.local/share}/dev/shell/.stamp"
-  if [ -f "$__dev_stamp_file" ]; then
+  if [ -f "${__dev_stamp_file:?}" ]; then
     read -r __dev_stamp <"$__dev_stamp_file" || :
   fi
 
@@ -77,7 +71,7 @@ __dev_hook() {
     esac
   fi
 
-  unset __dev_stamp __dev_stamp_file __dev_env
+  unset __dev_stamp __dev_env
   return "$1"
 }
 

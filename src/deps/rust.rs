@@ -29,12 +29,13 @@ use crate::{
     Context,
     deps::{Dependency, Example, Task},
     process,
-    shell::{ShellDir, home},
+    shell::ShellDir,
 };
 
 const INSTALL_URL: &str = "https://sh.rustup.rs";
-/// rustup's file in the [`ShellDir`]. Must match `share/shell`.
-const SHELL_FILE: &str = "rustup";
+/// rustup's file in the [`ShellDir`], listed in
+/// [`SETUP_FILES`](crate::shell::SETUP_FILES).
+pub const SHELL_FILE: &str = "rustup";
 /// The entry that means "whatever rust-toolchain.toml names".
 const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
 
@@ -530,10 +531,7 @@ fn quoted(value: &str) -> Vec<String> {
 
 /// `$CARGO_HOME`, or `~/.cargo`.
 fn default_cargo_home() -> crate::Result<PathBuf> {
-    match env::var_os("CARGO_HOME").filter(|h| !h.is_empty()) {
-        Some(dir) => Ok(PathBuf::from(dir)),
-        None => Ok(home()?.join(".cargo")),
-    }
+    crate::layout::cargo_home(&crate::layout::process)
 }
 
 fn find_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
