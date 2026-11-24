@@ -26,6 +26,12 @@ ENV DEV_AUTO_UPDATE=0
 
 COPY --from=build /src/target/release/dev /usr/local/bin/dev
 
+# mise is installed ahead of time so the recording doesn't sit on its download.
+# Outside ~/.local/bin, dev treats it as installed by something else and uses
+# it as is, rather than running `mise self-update` on camera.
+RUN curl -fsSL https://mise.run \
+  | MISE_INSTALL_PATH=/usr/local/bin/mise MISE_VERSION=v2026.11.12 sh
+
 # The zerobrew installer refuses to run as root.
 RUN useradd --create-home --shell /bin/bash demo \
   && mkdir -p /home/demo/demo /vhs \

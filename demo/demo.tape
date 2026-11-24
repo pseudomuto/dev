@@ -26,11 +26,11 @@ Type "cd demo && dev up"
 Enter
 # Real installs over the network, so allow plenty of time.
 Wait@5m
-Sleep 3s
+Sleep 2s
 
 Type "jq --version && yq --version"
 Enter
-Sleep 2.5s
+Sleep 2s
 
 Hide
 Type "clear"
@@ -48,7 +48,7 @@ Sleep 1s
 
 Type 'echo "${GREETING:-unset}"'
 Enter
-Sleep 2.5s
+Sleep 2s
 
 Hide
 Type "cd demo && clear"
