@@ -20,6 +20,7 @@ use crate::{
     deps::{
         Dependency,
         brew::Brew,
+        custom::{self, Custom},
         mise::{self, Mise, ToolSpec},
         packages::{Eco, Mode, Packages},
         rust::{self, Rust},
@@ -101,6 +102,8 @@ pub enum Scope {
 enum DepSpec {
     Brew(Vec<String>),
     Rust(Vec<rust::Entry>),
+    /// One dependency per entry, in order.
+    Custom(Vec<custom::Entry>),
     /// Every tool, met by one mise dependency.
     Tools,
     /// `packages: [node, ruby]`.
@@ -223,6 +226,11 @@ impl Project {
             match spec {
                 DepSpec::Brew(packages) => deps.push(Box::new(Brew::new(packages.clone()))),
                 DepSpec::Rust(entries) => deps.push(Box::new(Rust::new(&self.root, entries.clone()))),
+                DepSpec::Custom(entries) => {
+                    for entry in entries {
+                        deps.push(Box::new(Custom::new(&self.root, entry.clone())));
+                    }
+                }
                 DepSpec::Tools => match self.scope {
                     Scope::Global => deps.push(Box::new(Mise::global(self.tools.clone()))),
                     Scope::Project => deps.push(Box::new(Mise::project(&self.root, self.tools.clone()))),
@@ -358,11 +366,9 @@ impl<'de> Visitor<'de> for DepsVisitor {
                     };
                     packages_after_tools = tools_at.is_some();
                 }
-                // Reserved for a built-in dependency, so it can't be a tool.
-                // Fail while reading the value so the error points at this
-                // entry. Failing here directly points at the start of `deps`.
                 "custom" => {
-                    map.next_value_seed(Unsupported(&key))?;
+                    let entries: Vec<custom::Entry> = map.next_value()?;
+                    specs.push(DepSpec::Custom(entries));
                 }
                 _ => {
                     let value: Spanned<ToolValue> = map.next_value()?;
@@ -586,17 +592,6 @@ impl<'de> Visitor<'de> for ScalarVisitor {
     fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Scalar, A::Error> {
         while seq.next_element::<de::IgnoredAny>()?.is_some() {}
         Ok(Scalar::Nested)
-    }
-}
-
-/// Rejects the value of an unsupported dependency key.
-struct Unsupported<'a>(&'a str);
-
-impl<'de> de::DeserializeSeed<'de> for Unsupported<'_> {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, _deserializer: D) -> std::result::Result<(), D::Error> {
-        Err(de::Error::custom(format!("unsupported dependency `{}`", self.0)))
     }
 }
 

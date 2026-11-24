@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{self, BufRead, BufReader, Write},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
 };
 
 use color_eyre::eyre::{WrapErr, bail};
@@ -37,7 +37,30 @@ pub fn run_interactive(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
     resumed
 }
 
+/// Like [`run`], but a non-zero exit is `Ok(false)` instead of an error, for
+/// commands that answer a question, like a custom dependency's `met` check.
+/// Still fails if the command can't be started or its output can't be
+/// copied.
+pub fn succeeds(ctx: &mut Context, cmd: &mut Command) -> Result<bool> {
+    let (status, _) = run_to_end(ctx, cmd.stdin(Stdio::null()))?;
+    Ok(status.success())
+}
+
 fn run_logged(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let (status, tail) = run_to_end(ctx, cmd)?;
+    if !status.success() {
+        if tail.is_empty() {
+            bail!("`{program}` failed with {status}");
+        }
+        bail!("`{program}` failed with {status}. Last output:\n{}", tail.join("\n"));
+    }
+    Ok(())
+}
+
+/// Runs `cmd`, logging it and its output, and returns its exit status and
+/// the last lines of its output.
+fn run_to_end(ctx: &mut Context, cmd: &mut Command) -> Result<(ExitStatus, Vec<String>)> {
     let program = cmd.get_program().to_string_lossy().into_owned();
     writeln!(ctx.log, "$ {}", display(cmd)).wrap_err("failed to write to the log")?;
 
@@ -65,13 +88,7 @@ fn run_logged(ctx: &mut Context, cmd: &mut Command) -> Result<()> {
     let status = child
         .wait()
         .wrap_err_with(|| format!("failed to wait for `{program}`"))?;
-    if !status.success() {
-        if tail.is_empty() {
-            bail!("`{program}` failed with {status}");
-        }
-        bail!("`{program}` failed with {status}. Last output:\n{}", tail.join("\n"));
-    }
-    Ok(())
+    Ok((status, tail))
 }
 
 /// Copies `reader` to `log` line by line, ending it with a newline if it

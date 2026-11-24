@@ -1,5 +1,8 @@
+mod common;
+
 use std::collections::BTreeMap;
 
+use common::capturing_ctx;
 use dev::{
     Result,
     commands::Script,
@@ -122,17 +125,53 @@ fn from_yaml_rejects_names_that_are_not_lowercase_dashed() {
 }
 
 #[test]
-fn from_yaml_rejects_reserved_dependencies() {
-    let yaml = "name: demo\ndeps:\n  brew: [jq]\n  custom: []\n";
-    let msg = match parse(yaml) {
-        Ok(_) => panic!("expected `custom` to be rejected"),
+fn from_yaml_rejects_a_malformed_custom_value() {
+    let msg = match parse("name: demo\ndeps:\n  brew: [jq]\n  custom: nope\n") {
+        Ok(_) => panic!("expected `custom: nope` to be rejected"),
         Err(e) => e.to_string(),
     };
     // The location should point at the `custom` entry, not the start of `deps`.
-    assert!(
-        msg.starts_with("error: line 4 column 11: unsupported dependency `custom`"),
-        "unexpected error: {msg}"
+    assert!(msg.starts_with("error: line 4 column 11:"), "unexpected error: {msg}");
+}
+
+#[test]
+fn from_yaml_parses_custom_deps_in_order() -> Result<()> {
+    let project = parse(
+        r#"
+name: demo
+deps:
+  brew: [jq]
+  custom:
+    - { name: A, met: "true", meet: "true" }
+    - { name: B, met: "true", meet: "true", down: "true" }
+  node: lts
+"#,
+    )?;
+
+    let deps = project.deps(Mode::Local)?;
+    assert_eq!(
+        vec!["Install brew dependencies", "A", "B", "Install tools"],
+        names(&deps)
     );
+    Ok(())
+}
+
+#[test]
+fn from_yaml_allows_empty_custom() -> Result<()> {
+    let project = parse("name: demo\ndeps:\n  custom: []\n")?;
+    assert!(project.deps(Mode::Local)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn from_yaml_rejects_unknown_custom_fields() {
+    let yaml = "name: demo\ndeps:\n  custom:\n    - { name: A, met: x, meet: y, unmet: z }\n";
+    let msg = match parse(yaml) {
+        Ok(_) => panic!("expected `unmet` to be rejected"),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.starts_with("error: line "), "unexpected error: {msg}");
+    assert!(msg.contains("unknown field `unmet`"), "unexpected error: {msg}");
 }
 
 #[test]
@@ -705,5 +744,21 @@ fn from_yaml_reads_plain_versions_back_exactly_after_unicode_comments_and_aliase
         ],
         parse(yaml)?.tools
     );
+    Ok(())
+}
+
+#[test]
+fn load_global_runs_custom_deps_in_home() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let path = home.path().join("dev.yaml");
+    std::fs::write(
+        &path,
+        "deps:\n  custom:\n    - { name: A, met: test -f f, meet: touch f }\n",
+    )?;
+
+    let project = Project::load(&path, Scope::Global, &vars(&self::home(home.path())))?;
+    let deps = project.deps(Mode::Local)?;
+    deps[0].meet(&mut capturing_ctx().0)?;
+    assert!(home.path().join("f").exists());
     Ok(())
 }

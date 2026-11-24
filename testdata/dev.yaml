@@ -22,13 +22,13 @@ deps:
   # rust:
   #   - rust-toolchain.toml
   #   - nightly: [rustfmt]
-  #
-  # custom:
-  #   - name: Ensure file exists
-  #     met: test -f test-file.txt
-  #     meet: |
-  #       echo "yo yo yo" > test-file.txt
-  #     down: rm -f test-file.txt
+
+  custom:
+    - name: Ensure file exists
+      met: test -f test-file.txt
+      meet: |
+        echo "yo yo yo" > test-file.txt
+      down: rm -f test-file.txt
 
 commands:
   # `dev hello a b` prints the greeting and its args.

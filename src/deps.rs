@@ -10,6 +10,7 @@ use crate::{
 
 pub mod bin;
 pub mod brew;
+pub mod custom;
 pub mod mise;
 pub mod packages;
 pub mod rust;
