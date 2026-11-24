@@ -2,7 +2,8 @@
 //!
 //! Only for cases that fail before anything is applied: these must never use
 //! a `dev.yaml` with a supported dependency. Nearly any key under `deps` is
-//! one (a mise tool), so invalid ones must use a reserved key like `custom`.
+//! one (a mise tool), so invalid ones must use a built-in key with a value
+//! of the wrong shape, like `custom: nope`.
 //!
 //! [`dev`] also keeps `dev` away from the real home and the real mise and zb,
 //! as a backstop for when that rule gets broken.
@@ -89,14 +90,17 @@ fn up_fails_without_dev_yaml() -> Result<()> {
 #[test]
 fn up_fails_on_invalid_dev_yaml() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    std::fs::write(dir.path().join("dev.yaml"), "name: demo\ndeps:\n  custom: []\n")?;
+    std::fs::write(dir.path().join("dev.yaml"), "name: demo\ndeps:\n  custom: nope\n")?;
 
     let output = dev(&dir, &["up"])?;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(Some(1), output.status.code(), "stderr: {stderr}");
     assert!(stderr.contains("invalid project file dev.yaml"), "stderr: {stderr}");
-    assert!(stderr.contains("unsupported dependency `custom`"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("line 3 column 11: expected sequence start"),
+        "stderr: {stderr}"
+    );
     assert!(output.stdout.is_empty(), "nothing should be applied");
     Ok(())
 }
@@ -543,7 +547,7 @@ fn up_global_fails_without_a_global_dev_yaml() -> Result<()> {
 #[test]
 fn up_global_reads_only_the_global_dev_yaml_and_logs_to_the_state_dir() -> Result<()> {
     // Invalid, so reading it would fail.
-    let dir = project_dir("name: demo\ndeps:\n  custom: []\n")?;
+    let dir = project_dir("name: demo\ndeps:\n  custom: nope\n")?;
     let config = dir.path().join("home/.config");
     std::fs::create_dir_all(&config)?;
     // No deps, so nothing gets installed.

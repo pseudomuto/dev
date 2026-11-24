@@ -194,7 +194,23 @@ deps:
   install that changes the manifest or lockfile anyway (e.g. `go mod download` filling in `go.sum`) fails, since it
   means they weren't committed up to date.
 
-- `custom` is reserved for a future built-in dependency.
+- `custom` is a list of shell checks, for anything the other deps don't cover:
+
+  ```yaml
+  deps:
+    custom:
+      - name: Ensure file exists
+        met: test -f test-file.txt
+        meet: echo "yo yo yo" > test-file.txt
+        down: rm -f test-file.txt
+  ```
+
+  `dev up` shows each one by its `name`. When `met` exits 0 it's met and nothing else runs. Otherwise dev runs `meet`,
+  then `met` again, which has to pass this time. `dev down` runs `down`, if it's set. Every snippet runs with `sh -c`,
+  like a command, in the project root (`HOME` for the global file), with the project's env and no stdin. A multi-line
+  `met` only reports its last line's exit status, so join the checks with `&&` or start it with `set -e`.
+  dev waits until every process a snippet starts closes its output, so send a background process's output elsewhere
+  (`./start-server >/dev/null 2>&1 &`), or `dev up` waits for it to exit.
 
 ### commands
 

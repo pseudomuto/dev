@@ -100,3 +100,31 @@ fn run_interactive_pauses_the_reporter_around_the_command() -> Result<()> {
     assert_eq!(vec!["pause", "output hi", "resume"], *events.lock().unwrap());
     Ok(())
 }
+
+#[test]
+fn succeeds_is_true_on_exit_zero() -> Result<()> {
+    let (mut ctx, _, log) = capturing_ctx();
+    let mut cmd = ctx.command("sh");
+    assert!(process::succeeds(&mut ctx, cmd.args(["-c", "echo ok"]))?);
+    assert_eq!("$ sh -c 'echo ok'\nok\n", log.to_string());
+    Ok(())
+}
+
+#[test]
+fn succeeds_is_false_on_nonzero_exit() -> Result<()> {
+    let (mut ctx, _, log) = capturing_ctx();
+    let mut cmd = ctx.command("sh");
+    assert!(!process::succeeds(&mut ctx, cmd.args(["-c", "echo no; exit 3"]))?);
+    assert!(log.to_string().contains("no\n"), "log: {log}");
+    Ok(())
+}
+
+#[test]
+fn succeeds_errors_when_the_program_cant_start() {
+    let (mut ctx, _, _) = capturing_ctx();
+    let mut cmd = ctx.command("/nonexistent/dev-test/prog");
+    let msg = process::succeeds(&mut ctx, &mut cmd)
+        .expect_err("a missing program should be an error")
+        .to_string();
+    assert!(msg.contains("failed to start"), "msg: {msg}");
+}
