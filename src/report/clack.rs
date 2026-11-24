@@ -1,6 +1,7 @@
 //! The terminal UI: a clack-style rail (via cliclack) with a line per met
 //! dependency, and a block with a spinner per task for the rest. Hollow
-//! diamonds are in progress, filled ones are done.
+//! diamonds are in progress, filled ones are done. The running task's
+//! latest output shows under it until it's done.
 //!
 //! ```text
 //! ┌  dev up · demo-project
@@ -8,13 +9,16 @@
 //! ◆  Install brew dependencies
 //! ◇  Install tools
 //! │  ✓ Install mise
-//! │  ◒ Installing node@lts · mise node@24.11.1 download 61%
+//! │  ◒ Installing node@lts
+//! │      mise node@24.11.1 download 41%
+//! │      mise node@24.11.1 download 52%
+//! │      mise node@24.11.1 download 61%
 //! ```
 
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::{collections::VecDeque, path::Path};
 
 use cliclack::{MultiProgress, ProgressBar, Theme, ThemeState};
 use color_eyre::{Report, eyre::eyre};
@@ -33,6 +37,9 @@ const S_BAR_END: Emoji = Emoji("└", "—");
 
 /// Columns the rail takes before a line of text (`│  `).
 const RAIL_WIDTH: usize = 3;
+
+/// How many lines of a running task's output show under it.
+const OUTPUT_LINES: usize = 3;
 
 /// cliclack's theme with bold cyan borders, and its step symbols swapped so
 /// a dependency's diamond fills in once it's done (cliclack fills the active
@@ -120,6 +127,9 @@ struct Block {
     idle: Option<ProgressBar>,
     /// The task being worked on, with its name.
     task: Option<(ProgressBar, String)>,
+    /// The latest output of the task being worked on, shown under it. See
+    /// [`push_output`].
+    output: VecDeque<String>,
 }
 
 impl Block {
@@ -133,6 +143,7 @@ impl Block {
             multi,
             idle: Some(idle),
             task: None,
+            output: VecDeque::new(),
         }
     }
 
@@ -175,6 +186,11 @@ impl Clack {
 
     fn task_step(&mut self, name: &str, status: Status) -> Result<()> {
         let block = self.block(name)?;
+        // Output belongs to the task that wrote it. Applying keeps it, since
+        // the task's output so far is still the latest.
+        if status != Status::Applying {
+            block.output.clear();
+        }
         match status {
             Status::Checking => {
                 let pb = match block.idle.take() {
@@ -192,7 +208,8 @@ impl Clack {
             }
             Status::Applying => {
                 if let Some((pb, _)) = &block.task {
-                    pb.set_message(name);
+                    let (_, cols) = Term::stderr().size();
+                    pb.set_message(output_message(name, &block.output, usize::from(cols)));
                 }
             }
             Status::Met | Status::Done => {
@@ -276,9 +293,14 @@ impl Reporter for Clack {
     }
 
     fn output(&mut self, line: &str) -> Result<()> {
-        if let Some((pb, name)) = self.block.as_ref().and_then(Block::active) {
+        if let Some(block) = self.block.as_mut() {
+            push_output(&mut block.output, line);
+        }
+        if let Some(block) = self.block.as_ref()
+            && let Some((pb, name)) = block.active()
+        {
             let (_, cols) = Term::stderr().size();
-            pb.set_message(tail_message(name, line, usize::from(cols)));
+            pb.set_message(output_message(name, &block.output, usize::from(cols)));
         }
         Ok(())
     }
@@ -409,16 +431,42 @@ fn failed(name: &str) -> String {
     format!("{} {name}", style(Emoji("✗", "x")).red())
 }
 
-/// The message for task `name` showing its latest output `line`, e.g.
-/// `Installing jq · ==> Downloading jq`. It's cut to fit `cols` columns,
-/// since a message that wraps breaks cliclack's redraw.
-fn tail_message(name: &str, line: &str, cols: usize) -> String {
+/// Adds `line` to `output`, the latest output of a task, keeping the last
+/// [`OUTPUT_LINES`]. Colors and surrounding whitespace are dropped, and blank
+/// lines are skipped so they don't take a slot.
+fn push_output(output: &mut VecDeque<String>, line: &str) {
     let line = strip_ansi_codes(line);
     let line = line.trim();
-    let message = if line.is_empty() {
-        name.to_string()
-    } else {
-        format!("{name} · {line}")
-    };
-    truncate_str(&message, cols.saturating_sub(MESSAGE_INDENT), "…").into_owned()
+    if line.is_empty() {
+        return;
+    }
+    if output.len() == OUTPUT_LINES {
+        output.pop_front();
+    }
+    output.push_back(line.to_string());
+}
+
+/// The message for task `name` with its latest `output` under it, each line
+/// on the rail and indented to sit under the name:
+///
+/// ```text
+/// Installing jq
+/// │      ==> Downloading jq
+/// │      ==> Pouring jq
+/// ```
+///
+/// Every line is cut to fit `cols` columns, since a message that wraps breaks
+/// cliclack's redraw. The name follows the spinner, so it gets the columns
+/// after [`MESSAGE_INDENT`].
+fn output_message(name: &str, output: &VecDeque<String>, cols: usize) -> String {
+    let mut message = truncate_str(name, cols.saturating_sub(MESSAGE_INDENT), "…").into_owned();
+    let rail = DevTheme.bar_color(&ThemeState::Active).apply_to(S_BAR);
+    let indent = " ".repeat(MESSAGE_INDENT + 1);
+    let width = cols.saturating_sub(1 + indent.len());
+
+    for line in output {
+        let line = strip_ansi_codes(line);
+        message += &format!("\n{rail}{indent}{}", truncate_str(&line, width, "…"));
+    }
+    message
 }

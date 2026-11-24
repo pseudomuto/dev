@@ -15,7 +15,7 @@ Show
 
 Type "cat demo/dev.yaml"
 Enter
-Sleep 5s
+Sleep 3s
 
 Hide
 Type "clear"
