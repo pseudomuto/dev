@@ -1,31 +1,48 @@
 use super::*;
 
+fn lines(lines: &[&str]) -> VecDeque<String> {
+    lines.iter().map(ToString::to_string).collect()
+}
+
 #[test]
-fn tail_message_appends_the_latest_line() {
+fn output_message_is_just_the_name_without_output() {
+    assert_eq!("Installing jq", output_message("Installing jq", &lines(&[]), 80));
+}
+
+#[test]
+fn output_message_puts_each_line_under_the_name() {
+    let msg = output_message("Installing jq", &lines(&["==> Downloading", "==> Pouring"]), 80);
     assert_eq!(
-        "Installing jq · ==> Downloading",
-        tail_message("Installing jq", "==> Downloading\n", 80)
+        "Installing jq\n│      ==> Downloading\n│      ==> Pouring",
+        strip_ansi_codes(&msg)
     );
 }
 
 #[test]
-fn tail_message_is_just_the_name_for_blank_lines() {
-    assert_eq!("Installing jq", tail_message("Installing jq", "   ", 80));
+fn output_message_strips_colors() {
+    let msg = output_message("Installing jq", &lines(&["\u{1b}[32minstalled\u{1b}[0m"]), 80);
+    assert_eq!("Installing jq\n│      installed", strip_ansi_codes(&msg));
 }
 
 #[test]
-fn tail_message_strips_colors() {
-    assert_eq!(
-        "Installing jq · installed",
-        tail_message("Installing jq", "\u{1b}[32minstalled\u{1b}[0m", 80)
-    );
+fn output_message_fits_each_line_in_the_terminal() {
+    let msg = output_message(&"n".repeat(100), &lines(&[&"x".repeat(100)]), 30);
+    let msg = strip_ansi_codes(&msg);
+    let shown: Vec<&str> = msg.lines().collect();
+    assert_eq!(2, shown.len(), "msg: {msg}");
+    // The name follows the spinner, so it gets what's left after it.
+    assert_eq!(30 - MESSAGE_INDENT, console::measure_text_width(shown[0]), "msg: {msg}");
+    assert_eq!(30, console::measure_text_width(shown[1]), "msg: {msg}");
+    assert!(shown.iter().all(|l| l.ends_with('…')), "msg: {msg}");
 }
 
 #[test]
-fn tail_message_fits_in_the_terminal_after_the_rail() {
-    let msg = tail_message("Installing jq", &"x".repeat(100), 30);
-    assert_eq!(30 - MESSAGE_INDENT, console::measure_text_width(&msg), "msg: {msg}");
-    assert!(msg.ends_with('…'), "msg: {msg}");
+fn push_output_keeps_the_last_non_blank_lines() {
+    let mut output = VecDeque::new();
+    for line in ["1", "  ", "2", "\u{1b}[31m3\u{1b}[0m", "4  "] {
+        push_output(&mut output, line);
+    }
+    assert_eq!(lines(&["2", "3", "4"]), output);
 }
 
 #[test]
