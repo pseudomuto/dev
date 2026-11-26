@@ -29,15 +29,11 @@ commands:
 
   test:ci:
     desc: Run the full CI pipeline
-    run: |
-      set -e
-      dev fmt:check
-      dev lint
-      dev lint:deps
-      dev lint:actions
-      dev lint:shell
-      dev test
-      dev build
+    depends:
+      - fmt:check
+      - lint
+      - test
+      - build
 
   test:docker:
     desc: Build a throwaway container with dev and a sample dev.yaml, and open a shell in it
@@ -57,6 +53,10 @@ commands:
 
   lint:
     desc: Run clippy
+    depends:
+      - lint:deps
+      - lint:actions
+      - lint:shell
     run: cargo clippy --all-targets --all-features -- -D warnings
 
   lint:deps:
