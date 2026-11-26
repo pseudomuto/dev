@@ -11,6 +11,7 @@ pub mod report;
 pub mod run;
 pub mod run_log;
 pub mod shell;
+pub mod snippet;
 mod up;
 pub mod update;
 

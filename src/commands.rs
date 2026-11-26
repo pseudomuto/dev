@@ -10,10 +10,10 @@ use color_eyre::eyre::{WrapErr, bail};
 use serde::{
     Deserialize,
     Deserializer,
-    de::{self, MapAccess, Visitor},
+    de::{self, MapAccess, SeqAccess, Visitor},
 };
 
-use crate::{Context, Result, project::Project};
+use crate::{Context, Result, project::Project, snippet::Snippet};
 
 /// Flag and arg names whose env var would clobber something the script
 /// itself depends on.
@@ -120,16 +120,16 @@ impl<'de> Visitor<'de> for CommandVisitor {
     type Value = ProjectCommand;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("a shell snippet, or a map with `run` or `file`")
+        f.write_str("a shell snippet, a list of them, or a map with `run` or `file`")
     }
 
     fn visit_str<E: de::Error>(self, snippet: &str) -> std::result::Result<ProjectCommand, E> {
-        Ok(ProjectCommand {
-            desc: None,
-            script: Script::Run(snippet.to_string()),
-            flags: Vec::new(),
-            args: Vec::new(),
-        })
+        Ok(short_form(snippet.to_string()))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> std::result::Result<ProjectCommand, A::Error> {
+        let snippet = Snippet::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
+        Ok(short_form(snippet.into_script()))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> std::result::Result<ProjectCommand, A::Error> {
@@ -138,11 +138,21 @@ impl<'de> Visitor<'de> for CommandVisitor {
     }
 }
 
+/// A short-form command: a snippet with no desc, flags, or args.
+fn short_form(snippet: String) -> ProjectCommand {
+    ProjectCommand {
+        desc: None,
+        script: Script::Run(snippet),
+        flags: Vec::new(),
+        args: Vec::new(),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLong {
     desc: Option<String>,
-    run: Option<String>,
+    run: Option<Snippet>,
     file: Option<PathBuf>,
     #[serde(default)]
     flags: BTreeMap<String, RawFlag>,
@@ -174,7 +184,7 @@ impl RawLong {
     /// the script's env ambiguous.
     fn validate(self) -> Result<ProjectCommand> {
         let script = match (self.run, self.file) {
-            (Some(run), None) => Script::Run(run),
+            (Some(run), None) => Script::Run(run.into_script()),
             (None, Some(file)) => Script::File(file),
             (Some(_), Some(_)) => bail!("a command takes `run` or `file`, not both"),
             (None, None) => bail!("a command needs `run` or `file`"),

@@ -208,7 +208,8 @@ deps:
   `dev up` shows each one by its `name`. When `met` exits 0 it's met and nothing else runs. Otherwise dev runs `meet`,
   then `met` again, which has to pass this time. `dev down` runs `down`, if it's set. Every snippet runs with `sh -c`,
   like a command, in the project root (`HOME` for the global file), with the project's env and no stdin. A multi-line
-  `met` only reports its last line's exit status, so join the checks with `&&` or start it with `set -e`.
+  `met` only reports its last line's exit status, so join the checks with `&&`, start it with `set -e`, or make it a
+  [list](#lists-of-snippets).
   dev waits until every process a snippet starts closes its output, so send a background process's output elsewhere
   (`./start-server >/dev/null 2>&1 &`), or `dev up` waits for it to exit.
 
@@ -273,6 +274,25 @@ A long-form command without `flags` or `args` passes its args through as is, lik
 
 Command names can't match a built-in command (`up`, `down`, `new`, `self-update`, `shell-init`, `hook-env`, `help`).
 Commands always exit with their own status.
+
+#### Lists of snippets
+
+Anything that takes a shell snippet (a short-form command, `run`, and a custom dep's `met`, `meet`, and `down`) also
+takes a list of them:
+
+```yaml
+commands:
+  check:
+    - cargo fmt --check
+    - |
+      cd crates/core
+      cargo test "$@"
+```
+
+The items run as one script with `set -e`, like a CI job's steps: in order, stopping at the first one that fails.
+Each item gets the same `$0` and `$@`, and `cd` or vars set in one carry over to the next. Items can be multi-line
+strings, but not lists or maps. dev doesn't set `pipefail`, since not every `sh` has it, so a failure early in a
+pipe (`false | true`) doesn't stop the script.
 
 ### Global dev.yaml
 

@@ -11,6 +11,7 @@ use crate::{
     Result,
     deps::{Dependency, Example},
     process,
+    snippet::Snippet,
 };
 
 /// One entry under `deps.custom`: a shell check, a fix, and an optional
@@ -41,10 +42,10 @@ pub struct Entry {
 #[serde(deny_unknown_fields)]
 struct RawEntry {
     name: String,
-    met: String,
-    meet: String,
+    met: Snippet,
+    meet: Snippet,
     #[serde(default)]
-    down: Option<String>,
+    down: Option<Snippet>,
 }
 
 impl TryFrom<RawEntry> for Entry {
@@ -54,7 +55,9 @@ impl TryFrom<RawEntry> for Entry {
         if raw.name.trim().is_empty() {
             return Err("custom dependency `name` can't be empty".to_string());
         }
-        for (field, value) in [("met", &raw.met), ("meet", &raw.meet)] {
+        let met = raw.met.into_script();
+        let meet = raw.meet.into_script();
+        for (field, value) in [("met", &met), ("meet", &meet)] {
             if value.trim().is_empty() {
                 return Err(format!("custom dependency \"{}\": `{field}` can't be empty", raw.name));
             }
@@ -62,9 +65,9 @@ impl TryFrom<RawEntry> for Entry {
 
         Ok(Self {
             name: raw.name,
-            met: raw.met,
-            meet: raw.meet,
-            down: raw.down,
+            met,
+            meet,
+            down: raw.down.map(Snippet::into_script),
         })
     }
 }
