@@ -56,11 +56,40 @@ pub struct ProjectCommand {
 /// What a [`ProjectCommand`] runs.
 #[derive(Debug, PartialEq)]
 pub enum Script {
-    /// A snippet run with `sh -c`.
+    /// A snippet run with `sh -c`. A list of snippets is joined into one.
     Run(String),
     /// An executable, relative to dev.yaml, run directly so its shebang
     /// picks the interpreter.
     File(PathBuf),
+    /// A list with at least one `{ cmd: ... }` item, run in order until one
+    /// fails.
+    Steps(Vec<Step>),
+}
+
+/// One step of a [`Script::Steps`].
+#[derive(Debug, PartialEq)]
+pub enum Step {
+    /// The list's snippets between two `cmd` items, joined into one script
+    /// run with `sh -c`.
+    Run(String),
+    /// Another project command.
+    Cmd(CmdRef),
+}
+
+/// A `{ cmd: <name>, args: [...], env: {...} }` list item: runs the project
+/// command `cmd` as `dev <cmd> <args...>` would, without starting dev again.
+///
+/// It gets the caller's env, including its flag and arg vars, then its own
+/// flag and arg vars, then `env`, each overriding the last. It doesn't get
+/// the caller's `$@`, only `args`.
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CmdRef {
+    pub cmd: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// A `--name` flag.
@@ -124,12 +153,12 @@ impl<'de> Visitor<'de> for CommandVisitor {
     }
 
     fn visit_str<E: de::Error>(self, snippet: &str) -> std::result::Result<ProjectCommand, E> {
-        Ok(short_form(snippet.to_string()))
+        Ok(short_form(Script::Run(snippet.to_string())))
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> std::result::Result<ProjectCommand, A::Error> {
-        let snippet = Snippet::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
-        Ok(short_form(snippet.into_script()))
+        let run = Run::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
+        Ok(short_form(run.0))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> std::result::Result<ProjectCommand, A::Error> {
@@ -138,21 +167,135 @@ impl<'de> Visitor<'de> for CommandVisitor {
     }
 }
 
-/// A short-form command: a snippet with no desc, flags, or args.
-fn short_form(snippet: String) -> ProjectCommand {
+/// A short-form command: a snippet, or list, with no desc, flags, or args.
+fn short_form(script: Script) -> ProjectCommand {
     ProjectCommand {
         desc: None,
-        script: Script::Run(snippet),
+        script,
         flags: Vec::new(),
         args: Vec::new(),
     }
+}
+
+/// A command's `run`: a snippet, or a list of snippets and `cmd` items.
+struct Run(Script);
+
+impl<'de> Deserialize<'de> for Run {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        deserializer.deserialize_any(RunVisitor)
+    }
+}
+
+struct RunVisitor;
+
+impl<'de> Visitor<'de> for RunVisitor {
+    type Value = Run;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a shell snippet, or a list of snippets and `{ cmd: <name> }` items")
+    }
+
+    fn visit_str<E: de::Error>(self, snippet: &str) -> std::result::Result<Run, E> {
+        Ok(Run(Script::Run(snippet.to_string())))
+    }
+
+    // `true` and `false` are commands too, and YAML reads them as bools.
+    fn visit_bool<E: de::Error>(self, value: bool) -> std::result::Result<Run, E> {
+        Ok(Run(Script::Run(value.to_string())))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Run, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element::<Item>()? {
+            items.push(item);
+        }
+        list_script(items).map(Run).map_err(de::Error::custom)
+    }
+}
+
+/// An item of a command's list.
+enum Item {
+    Snippet(String),
+    Cmd(CmdRef),
+}
+
+impl<'de> Deserialize<'de> for Item {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        deserializer.deserialize_any(ItemVisitor)
+    }
+}
+
+struct ItemVisitor;
+
+impl<'de> Visitor<'de> for ItemVisitor {
+    type Value = Item;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a shell snippet, or `{ cmd: <name> }`")
+    }
+
+    fn visit_str<E: de::Error>(self, snippet: &str) -> std::result::Result<Item, E> {
+        Ok(Item::Snippet(snippet.to_string()))
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> std::result::Result<Item, E> {
+        Ok(Item::Snippet(value.to_string()))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> std::result::Result<Item, A::Error> {
+        CmdRef::deserialize(de::value::MapAccessDeserializer::new(map)).map(Item::Cmd)
+    }
+}
+
+/// Builds the script for a list. Without `cmd` items it's one snippet, like
+/// any other list. With them, the snippets between `cmd` items are joined
+/// into steps of their own.
+fn list_script(items: Vec<Item>) -> std::result::Result<Script, String> {
+    if items.is_empty() {
+        return Err("a list of commands can't be empty".to_string());
+    }
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Item::Snippet(snippet) if snippet.trim().is_empty() => {
+                return Err(format!("command {} in the list can't be empty", i + 1));
+            }
+            Item::Cmd(r) if r.cmd.trim().is_empty() => {
+                return Err(format!("command {} in the list has an empty `cmd`", i + 1));
+            }
+            _ => {}
+        }
+    }
+
+    let mut steps = Vec::new();
+    let mut snippets = Vec::new();
+    for item in items {
+        match item {
+            Item::Snippet(snippet) => snippets.push(snippet),
+            Item::Cmd(r) => {
+                if !snippets.is_empty() {
+                    steps.push(Step::Run(
+                        Snippet::from_list(std::mem::take(&mut snippets))?.into_script(),
+                    ));
+                }
+                steps.push(Step::Cmd(r));
+            }
+        }
+    }
+    if !snippets.is_empty() {
+        let script = Snippet::from_list(snippets)?.into_script();
+        if steps.is_empty() {
+            return Ok(Script::Run(script));
+        }
+        steps.push(Step::Run(script));
+    }
+    Ok(Script::Steps(steps))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLong {
     desc: Option<String>,
-    run: Option<Snippet>,
+    run: Option<Run>,
     file: Option<PathBuf>,
     #[serde(default)]
     flags: BTreeMap<String, RawFlag>,
@@ -184,7 +327,7 @@ impl RawLong {
     /// the script's env ambiguous.
     fn validate(self) -> Result<ProjectCommand> {
         let script = match (self.run, self.file) {
-            (Some(run), None) => Script::Run(run.into_script()),
+            (Some(run), None) => run.0,
             (None, Some(file)) => Script::File(file),
             (Some(_), Some(_)) => bail!("a command takes `run` or `file`, not both"),
             (None, None) => bail!("a command needs `run` or `file`"),
@@ -255,6 +398,62 @@ impl RawLong {
     }
 }
 
+/// Requires every `cmd` item to name a command in `commands`, and no command
+/// to end up running itself, which would never finish.
+pub fn check_refs(commands: &BTreeMap<String, ProjectCommand>) -> Result<()> {
+    for (name, cmd) in commands {
+        for target in cmd_refs(cmd) {
+            if !commands.contains_key(target) {
+                bail!("command `{name}` runs `{target}`, which isn't in dev.yaml");
+            }
+        }
+    }
+    // Commands whose refs are known not to loop.
+    let mut done = BTreeSet::new();
+    for name in commands.keys() {
+        let mut path = Vec::new();
+        find_cycle(commands, name, &mut path, &mut done)?;
+    }
+    Ok(())
+}
+
+/// Walks the commands `name` runs, depth first, failing if one is already
+/// on `path`.
+fn find_cycle<'a>(
+    commands: &'a BTreeMap<String, ProjectCommand>,
+    name: &'a str,
+    path: &mut Vec<&'a str>,
+    done: &mut BTreeSet<&'a str>,
+) -> Result<()> {
+    if done.contains(name) {
+        return Ok(());
+    }
+    if let Some(start) = path.iter().position(|n| *n == name) {
+        let mut cycle = path[start..].to_vec();
+        cycle.push(name);
+        bail!("command `{name}` ends up running itself: {}", cycle.join(" -> "));
+    }
+    path.push(name);
+    for target in cmd_refs(&commands[name]) {
+        find_cycle(commands, target, path, done)?;
+    }
+    path.pop();
+    done.insert(name);
+    Ok(())
+}
+
+/// The names of the commands `cmd`'s `cmd` items run, in order.
+fn cmd_refs(cmd: &ProjectCommand) -> impl Iterator<Item = &str> {
+    let steps = match &cmd.script {
+        Script::Steps(steps) => steps.as_slice(),
+        _ => &[],
+    };
+    steps.iter().filter_map(|step| match step {
+        Step::Cmd(r) => Some(r.cmd.as_str()),
+        Step::Run(_) => None,
+    })
+}
+
 /// Requires `name` (of a flag or arg, per `what`) to be lowercase dashed words
 /// starting with a letter, and its env var to be unused and not reserved.
 fn check_name(what: &str, name: &str, vars: &mut BTreeSet<String>) -> Result<()> {
@@ -283,6 +482,10 @@ fn check_name(what: &str, name: &str, vars: &mut BTreeSet<String>) -> Result<()>
 /// an env var, and `$@` is whatever came after `--`. A parse failure or
 /// `--help` prints clap's message and returns its exit code.
 ///
+/// A list with `cmd` items runs its steps in order and returns the first
+/// non-zero code. Each `cmd` item runs that command the same way, here
+/// rather than in a new dev process.
+///
 /// The command is attached to the terminal directly, not through
 /// `ctx.out`/`ctx.err`, so colors, prompts, and TTY checks work.
 pub fn run_command(ctx: &Context, project: &Project, name: &str, args: &[String]) -> Result<i32> {
@@ -300,7 +503,20 @@ pub fn run_command(ctx: &Context, project: &Project, name: &str, args: &[String]
             .collect();
         bail!("unknown command `{name}`; dev.yaml has:\n{}", list.join("\n"));
     };
+    invoke(ctx, project, name, cmd, args, Vec::new(), &BTreeMap::new())
+}
 
+/// Runs `cmd` with `args`. Its env is `env` from whoever called it, then its
+/// own flag and arg vars, then `overrides`, each winning over the last.
+fn invoke(
+    ctx: &Context,
+    project: &Project,
+    name: &str,
+    cmd: &ProjectCommand,
+    args: &[String],
+    mut env: Vec<(String, String)>,
+    overrides: &BTreeMap<String, String>,
+) -> Result<i32> {
     let Parsed { vars, rest } = if cmd.takes_raw_args() {
         Parsed {
             vars: Vec::new(),
@@ -315,28 +531,61 @@ pub fn run_command(ctx: &Context, project: &Project, name: &str, args: &[String]
             }
         }
     };
+    // Later entries win when they're applied to a process, in order.
+    env.extend(vars);
+    env.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-    let mut process = match &cmd.script {
-        Script::Run(snippet) => {
-            let mut process = ctx.command("sh");
-            process.arg("-c").arg(snippet).arg(name);
-            process
+    let steps = match &cmd.script {
+        Script::Run(snippet) => return run_snippet(ctx, name, snippet, &rest, &env),
+        Script::File(file) => {
+            // A bare `script.sh` would be found on PATH, not by dev.yaml.
+            let mut process = match file.is_relative() {
+                true => ctx.command(Path::new(".").join(file)),
+                false => ctx.command(file),
+            };
+            let status = process
+                .args(&rest)
+                .envs(env)
+                .status()
+                .wrap_err_with(|| format!("failed to start command `{name}` ({})", file.display()))?;
+            return Ok(exit_code(status));
         }
-        // A bare `script.sh` would be looked up on PATH, not next to dev.yaml.
-        Script::File(file) if file.is_relative() => ctx.command(Path::new(".").join(file)),
-        Script::File(file) => ctx.command(file),
+        Script::Steps(steps) => steps,
     };
-    let status = process
-        .args(rest)
-        .envs(vars)
-        .status()
-        .wrap_err_with(|| match &cmd.script {
-            Script::Run(_) => format!("failed to start command `{name}`"),
-            Script::File(file) => format!("failed to start command `{name}` ({})", file.display()),
-        })?;
 
-    // A command killed by a signal has no code; report it the way shells do.
-    Ok(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+    for step in steps {
+        let code = match step {
+            Step::Run(snippet) => run_snippet(ctx, name, snippet, &rest, &env)?,
+            Step::Cmd(r) => {
+                let Some(target) = project.commands.get(&r.cmd) else {
+                    bail!("command `{name}` runs `{}`, which isn't in dev.yaml", r.cmd);
+                };
+                invoke(ctx, project, &r.cmd, target, &r.args, env.clone(), &r.env)?
+            }
+        };
+        if code != 0 {
+            return Ok(code);
+        }
+    }
+    Ok(0)
+}
+/// Runs `snippet` as `sh -c '<snippet>' <name> <args...>`.
+fn run_snippet(ctx: &Context, name: &str, snippet: &str, args: &[String], env: &[(String, String)]) -> Result<i32> {
+    let status = ctx
+        .command("sh")
+        .arg("-c")
+        .arg(snippet)
+        .arg(name)
+        .args(args)
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .status()
+        .wrap_err_with(|| format!("failed to start command `{name}`"))?;
+    Ok(exit_code(status))
+}
+
+/// A command killed by a signal has no code; report it the way shells do.
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
 /// A command line parsed by [`parse`].

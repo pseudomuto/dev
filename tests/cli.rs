@@ -606,3 +606,45 @@ commands:
     assert_eq!("steps: a b\n", String::from_utf8_lossy(&output.stdout));
     Ok(())
 }
+
+#[test]
+fn cmd_items_run_other_commands_with_layered_env() -> Result<()> {
+    let dir = project_dir(
+        r#"name: demo
+env:
+  BASE: project
+commands:
+  child:
+    flags:
+      mode: { default: child-default }
+      dry-run: { type: bool }
+    run: echo "$0 [$*] mode=$MODE dry=$DRY_RUN parent=$PARENT_FLAG base=$BASE extra=$EXTRA"
+  parent:
+    flags:
+      parent-flag: { default: from-parent }
+      dry-run: { type: bool }
+    run:
+      - echo "parent [$*]"
+      - { cmd: child, args: [--, x], env: { EXTRA: item, MODE: item-mode } }
+      - { cmd: child, args: [--dry-run] }
+      - { cmd: fail }
+      - echo unreachable
+  fail: exit 5
+"#,
+    )?;
+    let output = dev(&dir, &["parent", "--dry-run", "--", "p1"])?;
+
+    assert_eq!(
+        Some(5),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The caller's vars are inherited, then the target's own flags (so
+    // dry-run resets), then the item's env. The caller's `$@` isn't.
+    let want = "parent [p1]\n\
+        child [x] mode=item-mode dry=false parent=from-parent base=project extra=item\n\
+        child [] mode=child-default dry=true parent=from-parent base=project extra=\n";
+    assert_eq!(want, String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}

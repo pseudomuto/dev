@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use dev::{
     Result,
-    commands::{Arg, Flag, FlagKind, ProjectCommand, Script},
+    commands::{Arg, CmdRef, Flag, FlagKind, ProjectCommand, Script, Step},
     project::{Project, Scope, vars},
 };
 
@@ -165,9 +165,65 @@ fn lists_reject_empty_and_nested_items() {
     let cases = [
         ("c: []", "a list of commands can't be empty"),
         ("c: [a, '']", "command 2 in the list can't be empty"),
-        ("c: [a, [b]]", "expected string scalar"),
+        (
+            "c: [a, [b]]",
+            "invalid type: sequence, expected a shell snippet, or `{ cmd: <name> }`",
+        ),
         ("c:\n    run: []", "a list of commands can't be empty"),
-        ("c:\n    run: [a, [b]]", "expected string scalar"),
+        (
+            "c:\n    run: [a, [b]]",
+            "invalid type: sequence, expected a shell snippet, or `{ cmd: <name> }`",
+        ),
+    ];
+    for (spec, want) in cases {
+        let yaml = format!("name: demo\ncommands:\n  {spec}\n");
+        let err = parse(&yaml).err().unwrap_or_else(|| panic!("should fail:\n{yaml}"));
+        let err = err.to_string();
+        assert!(err.contains(want), "want `{want}` in error for:\n{yaml}\ngot: {err}");
+    }
+}
+
+#[test]
+fn cmd_items_split_a_list_into_steps() -> Result<()> {
+    let yaml = r#"
+  test: cargo test
+  check:
+    - a
+    - b
+    - { cmd: test, args: [--verbose], env: { RUST_LOG: debug } }
+    - { cmd: test }
+    - c
+"#;
+    let want = Script::Steps(vec![
+        Step::Run("set -e\na\nb".to_string()),
+        Step::Cmd(CmdRef {
+            cmd: "test".to_string(),
+            args: vec!["--verbose".to_string()],
+            env: BTreeMap::from([("RUST_LOG".to_string(), "debug".to_string())]),
+        }),
+        Step::Cmd(CmdRef {
+            cmd: "test".to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }),
+        Step::Run("set -e\nc".to_string()),
+    ]);
+    assert_eq!(want, command(yaml, "check")?.script);
+    Ok(())
+}
+
+#[test]
+fn cmd_items_reject_bad_refs() {
+    let cases = [
+        ("a: [{ cmd: nope }]", "command `a` runs `nope`, which isn't in dev.yaml"),
+        ("a: [{ cmd: a }]", "command `a` ends up running itself: a -> a"),
+        (
+            "a: [{ cmd: b }]\n  b: [x, { cmd: c }]\n  c: [{ cmd: b }]",
+            "command `b` ends up running itself: b -> c -> b",
+        ),
+        ("a: [{ cmd: b, nope: 1 }]\n  b: x", "unknown field `nope`"),
+        ("a: [{ cmd: '' }]", "command 1 in the list has an empty `cmd`"),
+        ("a:\n    run: { cmd: b }\n  b: x", "invalid type: map"),
     ];
     for (spec, want) in cases {
         let yaml = format!("name: demo\ncommands:\n  {spec}\n");
