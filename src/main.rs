@@ -201,9 +201,9 @@ fn down(vars: &BTreeMap<String, String>) -> Result<()> {
 /// `dev <command> [args]`, a command from ./dev.yaml. Exits with its code.
 fn project(args: &[String], vars: &BTreeMap<String, String>) -> Result<()> {
     print_update_notice();
-    let (project, ctx) = load(&Plan::new(Target::Project), vars)?;
+    let (project, mut ctx) = load(&Plan::new(Target::Project), vars)?;
     let (name, args) = args.split_first().expect("clap passes the command name first");
-    let code = dev::run_command(&ctx, &project, name, args)?;
+    let code = dev::run_command(&mut ctx, &project, name, args)?;
     std::process::exit(code);
 }
 
