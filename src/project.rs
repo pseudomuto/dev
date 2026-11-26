@@ -16,7 +16,7 @@ use serde_saphyr::{Location, Spanned};
 
 use crate::{
     Result,
-    commands::ProjectCommand,
+    commands::{self, ProjectCommand},
     deps::{
         Dependency,
         brew::Brew,
@@ -162,6 +162,7 @@ impl Project {
             (None, Scope::Project) => bail!("`name` is required, e.g. `name: demo-project`"),
         };
         validate_name(&name)?;
+        commands::check_refs(&raw.commands)?;
         if raw.env.contains_key(mise::CONFIG_FILENAME_VAR) {
             bail!(
                 "env `{}` is set by dev, so mise finds a project's tools; remove it from dev.yaml",
