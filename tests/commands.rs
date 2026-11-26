@@ -146,3 +146,33 @@ fn long_form_rejects_invalid_specs() {
         assert!(err.contains(want), "want `{want}` in error for:\n{yaml}\ngot: {err}");
     }
 }
+
+#[test]
+fn lists_become_one_set_e_script() -> Result<()> {
+    let yaml = "  short:\n    - a\n    - |\n      b\n      c\n  long:\n    run: [a, b]\n";
+    for (name, want) in [("short", "set -e\na\nb\nc\n"), ("long", "set -e\na\nb")] {
+        assert_eq!(
+            Script::Run(want.to_string()),
+            command(yaml, name)?.script,
+            "command `{name}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn lists_reject_empty_and_nested_items() {
+    let cases = [
+        ("c: []", "a list of commands can't be empty"),
+        ("c: [a, '']", "command 2 in the list can't be empty"),
+        ("c: [a, [b]]", "expected string scalar"),
+        ("c:\n    run: []", "a list of commands can't be empty"),
+        ("c:\n    run: [a, [b]]", "expected string scalar"),
+    ];
+    for (spec, want) in cases {
+        let yaml = format!("name: demo\ncommands:\n  {spec}\n");
+        let err = parse(&yaml).err().unwrap_or_else(|| panic!("should fail:\n{yaml}"));
+        let err = err.to_string();
+        assert!(err.contains(want), "want `{want}` in error for:\n{yaml}\ngot: {err}");
+    }
+}

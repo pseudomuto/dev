@@ -122,3 +122,76 @@ fn entry_rejects_a_blank_name() {
         .to_string();
     assert!(msg.contains("custom dependency `name` can't be empty"), "error: {msg}");
 }
+
+#[test]
+fn list_snippets_run_as_one_script() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    fs::create_dir(dir.path().join("sub"))?;
+    let yaml = r#"
+name: Thing
+met: [test -f sub/f, test -f sub/g]
+meet:
+  - cd sub
+  - |
+    X=hi
+    echo "$X" > f
+  - echo "$X" > g
+"#;
+    let entry: Entry = serde_saphyr::from_str(yaml)?;
+    Custom::new(dir.path(), entry).meet(&mut capturing_ctx().0)?;
+
+    // `cd` and `X` carry from one item, and line, to the next.
+    assert_eq!("hi\n", fs::read_to_string(dir.path().join("sub/f"))?);
+    assert_eq!("hi\n", fs::read_to_string(dir.path().join("sub/g"))?);
+    Ok(())
+}
+
+#[test]
+fn list_snippets_stop_at_the_first_failure() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let yaml = r#"
+name: Thing
+met: "false"
+meet:
+  - touch a
+  - |
+    touch b
+    false
+    touch c
+  - touch d
+"#;
+    let entry: Entry = serde_saphyr::from_str(yaml)?;
+    let res = Custom::new(dir.path(), entry).meet(&mut capturing_ctx().0);
+
+    assert!(res.is_err(), "a failing line should fail meet");
+    let made: Vec<bool> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|f| dir.path().join(f).exists())
+        .collect();
+    assert_eq!(vec![true, true, false, false], made);
+    Ok(())
+}
+
+#[test]
+fn entry_rejects_bad_lists() {
+    let cases = [
+        ("met: []", "a list of commands can't be empty"),
+        ("met: [a, ' ']", "command 2 in the list can't be empty"),
+        ("met: [a, [b, c]]", "expected string scalar"),
+        ("met: [a, { b: c }]", "expected string scalar"),
+    ];
+    for (met, want) in cases {
+        let yaml = format!("name: x\n{met}\nmeet: y\n");
+        let msg = serde_saphyr::from_str::<Entry>(&yaml)
+            .expect_err("should be rejected")
+            .to_string();
+        assert!(msg.contains(want), "want `{want}` for `{met}`, got: {msg}");
+    }
+}
+
+#[test]
+fn entry_reads_bools_as_commands() -> Result<()> {
+    let got: Entry = serde_saphyr::from_str("name: x\nmet: false\nmeet: true\n")?;
+    assert_eq!(entry("x", "false", "true", None), got);
+    Ok(())
+}

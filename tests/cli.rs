@@ -581,3 +581,28 @@ fn project_commands_skip_the_env_the_shell_already_loaded() -> Result<()> {
     assert_eq!("from-shell\n", String::from_utf8_lossy(&output.stdout));
     Ok(())
 }
+
+#[test]
+fn list_commands_run_in_order_and_exit_at_the_first_failure() -> Result<()> {
+    let dir = project_dir(
+        r#"name: demo
+commands:
+  steps:
+    - X="$0"
+    - |
+      echo "$X: $*"
+      (exit 4)
+    - echo unreachable
+"#,
+    )?;
+    let output = dev(&dir, &["steps", "a", "b"])?;
+
+    assert_eq!(
+        Some(4),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!("steps: a b\n", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
