@@ -245,7 +245,7 @@ commands:
         ("GOFLAGS".to_string(), "-mod=mod".to_string()),
     ];
     assert_eq!(env, project.env);
-    let script = |name: &str| project.commands.get(name).map(|cmd| &cmd.script);
+    let script = |name: &str| project.commands.get(name).and_then(|cmd| cmd.script.as_ref());
     assert_eq!(Some(&Script::Run("cargo test".to_string())), script("test"));
     assert_eq!(Some(&Script::Run("cargo clippy\n".to_string())), script("lint"));
     Ok(())

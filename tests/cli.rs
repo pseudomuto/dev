@@ -648,3 +648,149 @@ commands:
     assert_eq!(want, String::from_utf8_lossy(&output.stdout));
     Ok(())
 }
+
+#[test]
+fn depends_run_first_in_order_once_with_headers() -> Result<()> {
+    let dir = project_dir(
+        r#"name: demo
+commands:
+  a: { depends: [b, c], run: 'echo a "$@"' }
+  b: { depends: [d], run: echo b }
+  c: { depends: [d], run: echo c }
+  d: echo d
+"#,
+    )?;
+    let output = dev(&dir, &["a", "x"])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(Some(0), output.status.code(), "stderr: {stderr}");
+    assert_eq!("d\nb\nc\na x\n", String::from_utf8_lossy(&output.stdout));
+    assert!(stderr.contains("==> d\n==> b\n==> c\n"), "stderr: {stderr}");
+    assert!(!stderr.contains("==> a"), "stderr: {stderr}");
+    Ok(())
+}
+
+#[test]
+fn a_failing_dep_stops_the_run_with_its_code() -> Result<()> {
+    let dir = project_dir(
+        r#"name: demo
+commands:
+  ci: { depends: [ok, bad, never], run: echo main }
+  ok: echo ok
+  bad: exit 5
+  never: echo never
+"#,
+    )?;
+    let output = dev(&dir, &["ci"])?;
+
+    assert_eq!(
+        Some(5),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!("ok\n", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+#[test]
+fn deps_get_their_flag_defaults() -> Result<()> {
+    let dir = project_dir(
+        r#"name: demo
+commands:
+  ci: { depends: [show], run: "true" }
+  show:
+    flags:
+      env: { default: staging }
+    run: echo "$ENV"
+"#,
+    )?;
+    let output = dev(&dir, &["ci"])?;
+
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!("staging\n", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+#[test]
+fn help_and_usage_errors_run_no_deps() -> Result<()> {
+    let dir = project_dir(
+        r#"name: demo
+commands:
+  ci:
+    depends: [loud]
+    flags:
+      yes: { type: bool }
+    run: "true"
+  loud: echo LOUD
+"#,
+    )?;
+
+    for (args, code) in [(&["ci", "--help"][..], 0), (&["ci", "--nope"][..], 2)] {
+        let output = dev(&dir, args)?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(Some(code), output.status.code(), "dev {args:?}");
+        assert!(!stdout.contains("LOUD"), "dev {args:?} ran a dep: {stdout}");
+    }
+    Ok(())
+}
+
+#[test]
+fn depends_only_commands_reject_args_with_usage() -> Result<()> {
+    let dir = project_dir("name: demo\ncommands:\n  ci: { depends: [ok] }\n  ok: echo ok\n")?;
+    let output = dev(&dir, &["ci", "extra"])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(Some(2), output.status.code(), "stderr: {stderr}");
+    assert!(stderr.contains("Usage: dev ci"), "stderr: {stderr}");
+    assert!(
+        output.stdout.is_empty(),
+        "ran a dep: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    Ok(())
+}
+
+#[test]
+fn depends_only_commands_get_help() -> Result<()> {
+    let dir = project_dir("name: demo\ncommands:\n  ci: { desc: Run CI, depends: [ok] }\n  ok: echo ok\n")?;
+    let output = dev(&dir, &["ci", "--help"])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Run CI"), "stdout: {stdout}");
+    assert!(!stdout.contains("ARGS"), "no script, so no `-- ARGS`: {stdout}");
+    assert!(!stdout.contains("ok\n"), "ran a dep: {stdout}");
+    Ok(())
+}
+
+#[test]
+fn cmd_items_run_their_targets_depends() -> Result<()> {
+    let dir = project_dir(
+        r#"name: demo
+commands:
+  check:
+    - echo check
+    - { cmd: test }
+  test: { depends: [build], run: echo test }
+  build: echo build
+"#,
+    )?;
+    let output = dev(&dir, &["check"])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(Some(0), output.status.code(), "stderr: {stderr}");
+    assert_eq!("check\nbuild\ntest\n", String::from_utf8_lossy(&output.stdout));
+    assert!(stderr.contains("==> build\n"), "stderr: {stderr}");
+    Ok(())
+}

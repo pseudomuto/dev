@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    io::Write,
     os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
 };
@@ -28,11 +29,13 @@ const REST: &str = "_rest";
 /// A plain string is a shell snippet whose args pass through as `$@`. A map
 /// can point at a script `file` instead, and declare `flags` and `args` that
 /// dev parses and hands to the script as env vars, e.g. `--dry-run` as
-/// `$DRY_RUN`:
+/// `$DRY_RUN`. A map can also list commands to run first, in `depends`:
 ///
 /// ```yaml
 /// commands:
 ///   test: cargo test
+///   ci:
+///     depends: [test]
 ///   deploy:
 ///     desc: Deploy an app
 ///     flags:
@@ -46,7 +49,10 @@ const REST: &str = "_rest";
 pub struct ProjectCommand {
     /// Shown in `dev <name> --help` and the list of commands.
     pub desc: Option<String>,
-    pub script: Script,
+    /// `None` for a command that only runs its `depends`.
+    pub script: Option<Script>,
+    /// Names of commands to run before this one, in order.
+    pub depends: Vec<String>,
     /// Sorted by name.
     pub flags: Vec<Flag>,
     /// Positional, in the order they're declared.
@@ -149,7 +155,7 @@ impl<'de> Visitor<'de> for CommandVisitor {
     type Value = ProjectCommand;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("a shell snippet, a list of them, or a map with `run` or `file`")
+        f.write_str("a shell snippet, a list of them, or a map with `run`, `file`, or `depends`")
     }
 
     fn visit_str<E: de::Error>(self, snippet: &str) -> std::result::Result<ProjectCommand, E> {
@@ -171,7 +177,8 @@ impl<'de> Visitor<'de> for CommandVisitor {
 fn short_form(script: Script) -> ProjectCommand {
     ProjectCommand {
         desc: None,
-        script,
+        script: Some(script),
+        depends: Vec::new(),
         flags: Vec::new(),
         args: Vec::new(),
     }
@@ -298,6 +305,8 @@ struct RawLong {
     run: Option<Run>,
     file: Option<PathBuf>,
     #[serde(default)]
+    depends: Vec<String>,
+    #[serde(default)]
     flags: BTreeMap<String, RawFlag>,
     #[serde(default)]
     args: Vec<RawArg>,
@@ -327,11 +336,16 @@ impl RawLong {
     /// the script's env ambiguous.
     fn validate(self) -> Result<ProjectCommand> {
         let script = match (self.run, self.file) {
-            (Some(run), None) => run.0,
-            (None, Some(file)) => Script::File(file),
+            (Some(run), None) => Some(run.0),
+            (None, Some(file)) => Some(Script::File(file)),
             (Some(_), Some(_)) => bail!("a command takes `run` or `file`, not both"),
-            (None, None) => bail!("a command needs `run` or `file`"),
+            (None, None) if !self.depends.is_empty() => None,
+            (None, None) => bail!("a command needs `run`, `file`, or `depends`"),
         };
+        // Nothing would ever see them.
+        if script.is_none() && (!self.flags.is_empty() || !self.args.is_empty()) {
+            bail!("a command with only `depends` can't take flags or args");
+        }
 
         let mut vars = BTreeSet::new();
         let mut shorts = BTreeSet::new();
@@ -392,19 +406,33 @@ impl RawLong {
         Ok(ProjectCommand {
             desc: self.desc,
             script,
+            depends: self.depends,
             flags,
             args,
         })
     }
 }
 
-/// Requires every `cmd` item to name a command in `commands`, and no command
-/// to end up running itself, which would never finish.
+/// Requires every `cmd` item and `depends` entry to name a command in
+/// `commands`, and no command to end up running itself, through either one,
+/// which would never finish. A dep also can't have a required arg, since
+/// deps run with none.
 pub fn check_refs(commands: &BTreeMap<String, ProjectCommand>) -> Result<()> {
     for (name, cmd) in commands {
         for target in cmd_refs(cmd) {
             if !commands.contains_key(target) {
                 bail!("command `{name}` runs `{target}`, which isn't in dev.yaml");
+            }
+        }
+        for dep in &cmd.depends {
+            let Some(target) = commands.get(dep) else {
+                bail!("command `{name}` depends on `{dep}`, which isn't in dev.yaml");
+            };
+            if let Some(arg) = target.args.iter().find(|arg| arg.required) {
+                bail!(
+                    "command `{name}` depends on `{dep}`, whose arg `{}` is required, so it can't run as a dep",
+                    arg.name
+                );
             }
         }
     }
@@ -434,7 +462,8 @@ fn find_cycle<'a>(
         bail!("command `{name}` ends up running itself: {}", cycle.join(" -> "));
     }
     path.push(name);
-    for target in cmd_refs(&commands[name]) {
+    let cmd = &commands[name];
+    for target in cmd.depends.iter().map(String::as_str).chain(cmd_refs(cmd)) {
         find_cycle(commands, target, path, done)?;
     }
     path.pop();
@@ -445,7 +474,7 @@ fn find_cycle<'a>(
 /// The names of the commands `cmd`'s `cmd` items run, in order.
 fn cmd_refs(cmd: &ProjectCommand) -> impl Iterator<Item = &str> {
     let steps = match &cmd.script {
-        Script::Steps(steps) => steps.as_slice(),
+        Some(Script::Steps(steps)) => steps.as_slice(),
         _ => &[],
     };
     steps.iter().filter_map(|step| match step {
@@ -474,6 +503,50 @@ fn check_name(what: &str, name: &str, vars: &mut BTreeSet<String>) -> Result<()>
     Ok(())
 }
 
+/// Every command `name` depends on, directly or not, in the order they run:
+/// a dep's own deps before it, siblings in the order they're listed. Each
+/// one appears once, and `name` itself isn't included.
+///
+/// Fails if `name` or any dep isn't in `commands`, or on a cycle.
+pub fn dep_order(commands: &BTreeMap<String, ProjectCommand>, name: &str) -> Result<Vec<String>> {
+    if !commands.contains_key(name) {
+        bail!("unknown command `{name}`");
+    }
+    let mut order = Vec::new();
+    visit_deps(commands, name, &mut vec![name.to_string()], &mut order)?;
+    Ok(order)
+}
+
+/// Adds the deps of `name`, the last command in `path`, to `order`,
+/// depth-first. `path` is the chain of commands that led here, for cycles.
+fn visit_deps(
+    commands: &BTreeMap<String, ProjectCommand>,
+    name: &str,
+    path: &mut Vec<String>,
+    order: &mut Vec<String>,
+) -> Result<()> {
+    for dep in &commands[name].depends {
+        if let Some(start) = path.iter().position(|seen| seen == dep) {
+            let cycle = path[start..].iter().chain([dep]).map(String::as_str);
+            bail!(
+                "command `{dep}` ends up running itself: {}",
+                cycle.collect::<Vec<_>>().join(" -> ")
+            );
+        }
+        if order.contains(dep) {
+            continue;
+        }
+        if !commands.contains_key(dep) {
+            bail!("command `{name}` depends on `{dep}`, which isn't in dev.yaml");
+        }
+        path.push(dep.clone());
+        visit_deps(commands, dep, path, order)?;
+        path.pop();
+        order.push(dep.clone());
+    }
+    Ok(())
+}
+
 /// Runs the project command `name` from `dev.yaml` and returns its exit code.
 ///
 /// A `run` snippet runs as `sh -c '<snippet>' <name> <args...>`, so `$0` is
@@ -486,9 +559,14 @@ fn check_name(what: &str, name: &str, vars: &mut BTreeSet<String>) -> Result<()>
 /// non-zero code. Each `cmd` item runs that command the same way, here
 /// rather than in a new dev process.
 ///
-/// The command is attached to the terminal directly, not through
+/// Once `args` parse, the command's `depends` run first, in [`dep_order`],
+/// each with no args and a `==> <dep>` line on `ctx.err` before it. The
+/// first one that fails stops the run with its code. A command run by a
+/// `cmd` item runs its `depends` the same way.
+///
+/// Commands are attached to the terminal directly, not through
 /// `ctx.out`/`ctx.err`, so colors, prompts, and TTY checks work.
-pub fn run_command(ctx: &Context, project: &Project, name: &str, args: &[String]) -> Result<i32> {
+pub fn run_command(ctx: &mut Context, project: &Project, name: &str, args: &[String]) -> Result<i32> {
     let Some(cmd) = project.commands.get(name) else {
         if project.commands.is_empty() {
             bail!("unknown command `{name}`; dev.yaml has no commands");
@@ -506,36 +584,84 @@ pub fn run_command(ctx: &Context, project: &Project, name: &str, args: &[String]
     invoke(ctx, project, name, cmd, args, Vec::new(), &BTreeMap::new())
 }
 
-/// Runs `cmd` with `args`. Its env is `env` from whoever called it, then its
-/// own flag and arg vars, then `overrides`, each winning over the last.
+/// Runs `cmd` with `args`: its `depends` first, then its own script (see
+/// [`run_script`] for its env).
 fn invoke(
-    ctx: &Context,
+    ctx: &mut Context,
     project: &Project,
     name: &str,
     cmd: &ProjectCommand,
     args: &[String],
-    mut env: Vec<(String, String)>,
+    env: Vec<(String, String)>,
     overrides: &BTreeMap<String, String>,
 ) -> Result<i32> {
-    let Parsed { vars, rest } = if cmd.takes_raw_args() {
-        Parsed {
-            vars: Vec::new(),
-            rest: args.to_vec(),
+    // Before any dep runs, so `--help` or a typo runs nothing.
+    let parsed = match parse_args(name, cmd, args) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            e.print().wrap_err("failed to print usage")?;
+            return Ok(e.exit_code());
         }
-    } else {
-        match parse(name, cmd, args) {
+    };
+
+    for dep in dep_order(&project.commands, name)? {
+        let dep_cmd = &project.commands[&dep];
+        // A dep that only has deps of its own has nothing to show.
+        if dep_cmd.script.is_none() {
+            continue;
+        }
+        let dep_parsed = match parse_args(&dep, dep_cmd, &[]) {
             Ok(parsed) => parsed,
             Err(e) => {
                 e.print().wrap_err("failed to print usage")?;
                 return Ok(e.exit_code());
             }
+        };
+        writeln!(ctx.err, "==> {dep}").wrap_err("failed to write to stderr")?;
+        ctx.err.flush().wrap_err("failed to write to stderr")?;
+        let code = run_script(ctx, project, &dep, dep_cmd, dep_parsed, env.clone(), &BTreeMap::new())?;
+        if code != 0 {
+            return Ok(code);
         }
-    };
+    }
+
+    run_script(ctx, project, name, cmd, parsed, env, overrides)
+}
+
+/// `args` for `cmd`: passed through raw when it has a script and declares no
+/// flags or args, else parsed by [`parse`]. A command with only `depends`
+/// always goes through [`parse`], so it gets `--help` and rejects args.
+fn parse_args(name: &str, cmd: &ProjectCommand, args: &[String]) -> clap::error::Result<Parsed> {
+    if cmd.takes_raw_args() && cmd.script.is_some() {
+        Ok(Parsed {
+            vars: Vec::new(),
+            rest: args.to_vec(),
+        })
+    } else {
+        parse(name, cmd, args)
+    }
+}
+
+/// Runs `cmd`'s own script, not its deps, with its parsed args. Its env is
+/// `env` from whoever called it, then its own flag and arg vars, then
+/// `overrides`, each winning over the last.
+fn run_script(
+    ctx: &mut Context,
+    project: &Project,
+    name: &str,
+    cmd: &ProjectCommand,
+    Parsed { vars, rest }: Parsed,
+    mut env: Vec<(String, String)>,
+    overrides: &BTreeMap<String, String>,
+) -> Result<i32> {
     // Later entries win when they're applied to a process, in order.
     env.extend(vars);
     env.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-    let steps = match &cmd.script {
+    let Some(script) = &cmd.script else {
+        return Ok(0);
+    };
+    let steps = match script {
         Script::Run(snippet) => return run_snippet(ctx, name, snippet, &rest, &env),
         Script::File(file) => {
             // A bare `script.sh` would be found on PATH, not by dev.yaml.
@@ -634,13 +760,16 @@ fn parse(name: &str, cmd: &ProjectCommand, args: &[String]) -> clap::error::Resu
         app = app.arg(arg);
     }
 
-    app = app.arg(
-        clap::Arg::new(REST)
-            .value_name("ARGS")
-            .num_args(0..)
-            .last(true)
-            .help("Passed to the script as its args"),
-    );
+    // No script, nothing to pass them to.
+    if cmd.script.is_some() {
+        app = app.arg(
+            clap::Arg::new(REST)
+                .value_name("ARGS")
+                .num_args(0..)
+                .last(true)
+                .help("Passed to the script as its args"),
+        );
+    }
 
     let matches = app.try_get_matches_from(std::iter::once(name).chain(args.iter().map(String::as_str)))?;
 
@@ -657,9 +786,13 @@ fn parse(name: &str, cmd: &ProjectCommand, args: &[String]) -> clap::error::Resu
         vars.extend(value.map(|v| (var_name(&arg.name), v)));
     }
 
-    let rest = matches
-        .get_many::<String>(REST)
-        .map(|values| values.cloned().collect())
-        .unwrap_or_default();
+    // `REST` is only defined for a command with a script.
+    let rest = match cmd.script {
+        Some(_) => matches
+            .get_many::<String>(REST)
+            .map(|values| values.cloned().collect())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
     Ok(Parsed { vars, rest })
 }

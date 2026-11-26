@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use dev::{
     Result,
-    commands::{Arg, CmdRef, Flag, FlagKind, ProjectCommand, Script, Step},
+    commands::{Arg, CmdRef, Flag, FlagKind, ProjectCommand, Script, Step, dep_order},
     project::{Project, Scope, vars},
 };
 
@@ -38,7 +38,8 @@ fn long_form_parses_desc_flags_args_and_run() -> Result<()> {
 
     let expected = ProjectCommand {
         desc: Some("Deploy an app".to_string()),
-        script: Script::Run("echo hi".to_string()),
+        script: Some(Script::Run("echo hi".to_string())),
+        depends: Vec::new(),
         flags: vec![
             Flag {
                 name: "dry-run".to_string(),
@@ -83,7 +84,8 @@ fn long_form_parses_file() -> Result<()> {
 
     let expected = ProjectCommand {
         desc: Some("Cut a release".to_string()),
-        script: Script::File("scripts/release.sh".into()),
+        script: Some(Script::File("scripts/release.sh".into())),
+        depends: Vec::new(),
         flags: Vec::new(),
         args: Vec::new(),
     };
@@ -95,7 +97,16 @@ fn long_form_parses_file() -> Result<()> {
 fn long_form_rejects_invalid_specs() {
     let cases = [
         ("run: a\n    file: b", "takes `run` or `file`, not both"),
-        ("desc: nothing to run", "needs `run` or `file`"),
+        ("desc: nothing to run", "needs `run`, `file`, or `depends`"),
+        ("depends: []", "needs `run`, `file`, or `depends`"),
+        (
+            "depends: [x]\n    flags:\n      fast: {}",
+            "a command with only `depends` can't take flags or args",
+        ),
+        (
+            "depends: [x]\n    args:\n      - name: target",
+            "a command with only `depends` can't take flags or args",
+        ),
         ("run: a\n    nope: 1", "unknown field `nope`"),
         (
             "run: a\n    flags:\n      Dry_Run: {}",
@@ -148,11 +159,32 @@ fn long_form_rejects_invalid_specs() {
 }
 
 #[test]
+fn long_form_parses_depends() -> Result<()> {
+    let cmd = command(
+        "  ci:\n    depends: [lint, test]\n    run: echo done\n  lint: x\n  test: x\n",
+        "ci",
+    )?;
+
+    assert_eq!(vec!["lint".to_string(), "test".to_string()], cmd.depends);
+    assert_eq!(Some(Script::Run("echo done".to_string())), cmd.script);
+    Ok(())
+}
+
+#[test]
+fn depends_alone_needs_no_script() -> Result<()> {
+    let cmd = command("  ci:\n    desc: CI\n    depends: [lint]\n  lint: cargo clippy\n", "ci")?;
+
+    assert_eq!(None, cmd.script);
+    assert_eq!(vec!["lint".to_string()], cmd.depends);
+    Ok(())
+}
+
+#[test]
 fn lists_become_one_set_e_script() -> Result<()> {
     let yaml = "  short:\n    - a\n    - |\n      b\n      c\n  long:\n    run: [a, b]\n";
     for (name, want) in [("short", "set -e\na\nb\nc\n"), ("long", "set -e\na\nb")] {
         assert_eq!(
-            Script::Run(want.to_string()),
+            Some(Script::Run(want.to_string())),
             command(yaml, name)?.script,
             "command `{name}`"
         );
@@ -208,7 +240,7 @@ fn cmd_items_split_a_list_into_steps() -> Result<()> {
         }),
         Step::Run("set -e\nc".to_string()),
     ]);
-    assert_eq!(want, command(yaml, "check")?.script);
+    assert_eq!(Some(want), command(yaml, "check")?.script);
     Ok(())
 }
 
@@ -229,6 +261,54 @@ fn cmd_items_reject_bad_refs() {
         let yaml = format!("name: demo\ncommands:\n  {spec}\n");
         let err = parse(&yaml).err().unwrap_or_else(|| panic!("should fail:\n{yaml}"));
         let err = err.to_string();
+        assert!(err.contains(want), "want `{want}` in error for:\n{yaml}\ngot: {err}");
+    }
+}
+
+#[test]
+fn dep_order_runs_deps_of_deps_first_and_each_once() -> Result<()> {
+    let yaml = r#"name: demo
+commands:
+  a: { depends: [b, c], run: x }
+  b: { depends: [d], run: x }
+  c: { depends: [d], run: x }
+  d: x
+"#;
+    let commands = parse(yaml)?.commands;
+
+    assert_eq!(vec!["d", "b", "c"], dep_order(&commands, "a")?);
+    assert!(dep_order(&commands, "d")?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn depends_rejects_bad_graphs() {
+    let cases = [
+        (
+            "a: { depends: [nope], run: x }",
+            "command `a` depends on `nope`, which isn't in dev.yaml",
+        ),
+        (
+            "a: { depends: [a], run: x }",
+            "command `a` ends up running itself: a -> a",
+        ),
+        (
+            "a: { depends: [b], run: x }\n  b: { depends: [a], run: x }",
+            "command `a` ends up running itself: a -> b -> a",
+        ),
+        (
+            "a: { depends: [deploy], run: x }\n  deploy: { args: [{ name: target }], run: x }",
+            "command `a` depends on `deploy`, whose arg `target` is required",
+        ),
+        (
+            "a: { depends: [b], run: x }\n  b: [{ cmd: a }]",
+            "command `a` ends up running itself: a -> b -> a",
+        ),
+    ];
+    for (spec, want) in cases {
+        let yaml = format!("name: demo\ncommands:\n  {spec}\n");
+        let err = parse(&yaml).err().unwrap_or_else(|| panic!("should fail:\n{yaml}"));
+        let err = format!("{err:#}");
         assert!(err.contains(want), "want `{want}` in error for:\n{yaml}\ngot: {err}");
     }
 }

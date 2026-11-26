@@ -257,7 +257,7 @@ dev release -y -- --notes CHANGELOG.md
 
 How the long form works:
 
-- **`run` or `file`**, exactly one. A `file` path is relative to `dev.yaml` and must be executable. It runs directly, so
+- **`run` or `file`**, exactly one, unless the command has [`depends`](#depends), where both are optional. A `file` path is relative to `dev.yaml` and must be executable. It runs directly, so
   its shebang picks the interpreter (bash, python, ...).
 - **Flags and args become env vars**, uppercased with dashes turned into underscores: `--dry-run` is `$DRY_RUN`. This
   works the same for `run` and `file`.
@@ -320,6 +320,30 @@ commands:
 - The snippets around a `cmd` item run as separate scripts, so `cd` and vars don't carry across it.
 - The list stops at the first step that fails, with its exit code. A `cmd` naming a command that doesn't exist, or a
   command that ends up running itself (`a -> b -> a`), is an error when dev.yaml loads.
+
+#### Depends
+
+A long-form command can list other commands to run before it:
+
+```yaml
+commands:
+  ci:
+    desc: Run everything CI runs
+    depends: [fmt:check, lint, test]
+  release:
+    depends: [ci]
+    run: ./scripts/release.sh
+```
+
+- **Order:** deps run one at a time, before the command, in the order listed. A dep's own deps run before it, and a
+  command that several deps share runs once.
+- **Failures:** the first dep that fails stops everything, and dev exits with its status.
+- **Args:** deps get none, so their flags take their defaults. What you type goes only to the command you ran, and a
+  command with no `run` or `file` can't declare flags or args, and takes none.
+- **Output:** dev prints `==> <dep>` before each dep, so you can tell them apart.
+- **`cmd` items:** a command run by a [`{ cmd: ... }` item](#running-other-commands) runs its deps too.
+- **Checks:** dev.yaml fails to load if a dep doesn't exist, if a dep has a required arg, or if a command ends up
+  running itself through `depends` or `cmd` items.
 
 ### Global dev.yaml
 
