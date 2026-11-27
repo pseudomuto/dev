@@ -2,15 +2,15 @@
 
 ## Setup
 
-dev is set up with dev. [Install it](../README.md#install) (0.0.2 or later), then from the repo:
+dev is set up with dev. [Install it](https://pseudomuto.com/dev/getting-started/install.html) (0.0.2 or later), then from the repo:
 
 ```sh
 dev up
 ```
 
 That installs rustup if needed, the Rust toolchain in `rust-toolchain.toml`, nightly rustfmt (`rustfmt.toml` needs
-it), and actionlint, cargo-shear, and shellcheck. Their versions are pinned in `dev.yaml`. dev keeps tools in your own
-mise config, so these become your default versions everywhere, not only in this repo.
+it), and actionlint, cargo-shear, mdbook, and shellcheck. Their versions are pinned in `dev.yaml`. The tools apply only
+inside this repo; your own mise config isn't changed.
 
 ## Commands
 
@@ -23,6 +23,8 @@ mise config, so these become your default versions everywhere, not only in this 
 | `dev lint`        | Runs clippy, with warnings as errors.            |
 | `dev fmt`         | Formats the code.                                |
 | `dev test:ci`     | Runs everything CI does: format, lints, tests.   |
+| `dev docs`        | Previews the docs site, rebuilding on changes.   |
+| `dev docs:build`  | Builds the docs site into `site/book`.           |
 | `dev test:docker` | Opens a shell in a throwaway Linux container.    |
 | `dev demo`        | Records `demo/demo.gif` in a container.          |
 
@@ -52,6 +54,8 @@ Changes land through pull requests, squash-merged, so each one becomes a single 
   Commit](https://www.conventionalcommits.org/en/v1.0.0/): `feat: ...`, `fix(shell): ...`, `docs: ...`. Mark a breaking
   change with `!`, e.g. `feat!: ...`. A check fails until the title fits.
 - **The PR body is the commit message**, so say why the change is needed.
+- **Docs change with the code.** A change to behavior, `dev.yaml` keys, commands, flags, or the action updates the
+  matching pages in `site/src`, published to <https://pseudomuto.com/dev>, in the same PR.
 - **The title is also the release notes line.** The same check labels the PR by its type, and releases group PRs by
   label: Breaking changes, Features (`feat`), Fixes (`fix`), Performance (`perf`), then everything else.
 

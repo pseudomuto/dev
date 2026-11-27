@@ -3,7 +3,7 @@
 #
 # Installs dev from its GitHub releases:
 #
-#   curl -fsSL https://raw.githubusercontent.com/pseudomuto/dev/main/install.sh | sh
+#   curl -fsSL https://pseudomuto.com/dev/install.sh | sh
 #
 # Settings, all optional:
 #
