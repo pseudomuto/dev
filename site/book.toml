@@ -1,0 +1,15 @@
+[book]
+title = "dev"
+src = "src"
+
+[output.html]
+# Catppuccin (https://github.com/catppuccin/mdBook), v4.0.0, MIT. theme/index.hbs
+# is mdBook 0.5.4's own template with the theme menu swapped for Catppuccin's
+# flavors. After an mdBook upgrade, regenerate it with `mdbook init --theme`
+# and redo the menu edit.
+additional-css = ["theme/catppuccin.css"]
+default-theme = "mocha"
+preferred-dark-theme = "mocha"
+site-url = "/dev/"
+git-repository-url = "https://github.com/pseudomuto/dev"
+edit-url-template = "https://github.com/pseudomuto/dev/edit/main/site/{path}"

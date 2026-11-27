@@ -8,6 +8,7 @@ deps:
     - nightly: [rustfmt]
   actionlint: 1.7.12
   "cargo:cargo-shear": 1.14.0
+  mdbook: 0.5.4
   shellcheck: 0.11.0
 
 commands:
@@ -33,6 +34,7 @@ commands:
       - fmt:check
       - lint
       - test
+      - docs:build
       - build
 
   test:docker:
@@ -42,6 +44,16 @@ commands:
   demo:
     desc: Record demo/demo.gif with VHS in a throwaway container (needs Docker and network)
     run: docker build -f demo/Dockerfile -t dev-demo . && docker run --rm -v "$PWD/demo:/vhs" dev-demo
+
+  docs:
+    desc: Preview the docs site, rebuilding on changes
+    run: mdbook serve site "$@"
+
+  docs:build:
+    desc: Build the docs site into site/book
+    run:
+      - mdbook build site
+      - cp install.sh site/book/install.sh
 
   fmt:
     desc: Run cargo fmt
